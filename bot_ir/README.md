@@ -41,29 +41,21 @@ pip install -e bot_ir          # 或在 bot_ir/ 内: pip install -e .
 
 ## 快速上手
 
-### 1. 接入数据（两个入口）
-
-**矩阵形态**（真实 raw 数据/内部脚本输出的主路径）：
+### 1. 接入数据（矩阵形态）
 
 ```python
 import pandas as pd
 from profmw import ProfilingStore
 
-df = pd.read_csv("real_raw.csv", index_col=0)      # 行=模块，列=时间
+df = pd.read_csv("real_raw.csv", index_col=0)      # 首列模块名作为行标
 store = ProfilingStore(meta={"benchmark": "bw_gather", "chip": "X9-v0.9"})
 store.add_matrix("dram_bw", df, meta={"unit": "GB/s", "stat": "窗口内均值"})
 # 列标字符串/int64 会被自动归一为 float64；重复行标/列标会报错
 ```
 
-**长表形态**（厂商逐事件导出的表格，窗口分桶后转矩阵）：
-
-```python
-rec = pd.read_csv("vendor_events.csv")            # 需含 time/module/value 三列
-store.add_type_from_records("dram_bw", rec, window=100.0, bucket_how="mean",
-                            meta={"unit": "GB/s", "stat": "窗口内均值"})
-# window=None 表示 rec 的时间已是打点时间，直接透视
-# 注意：module/time 为 NaN 的记录会被静默丢弃
-```
+> 备用接口：`add_type_from_records` 支持逐事件长表（time/module/value 三列，
+> `window=` 分桶、`bucket_how=` 定口径后转矩阵），供将来接入厂商逐事件导出使用，
+> 日常矩阵数据不经过它。详见 docstring。
 
 ### 2. 保存 / 加载
 
