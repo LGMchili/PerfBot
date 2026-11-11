@@ -5,4 +5,6 @@ run_dummy/
 run_dummy_raw/
 run_dummy.zip
 run_demo/
+report*.html
+run_*_report.html
 .pytest_cache/

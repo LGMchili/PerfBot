@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+viz = ["plotly>=5.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

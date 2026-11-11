@@ -106,6 +106,32 @@ report = store.validate()       # 检查：空矩阵/inf -> error，NaN 占比�
 print(report)                   # 逐类型一行；report.ok 为整体判定
 ```
 
+## 观测报告（HTML）
+
+人肉看 CSV / 静态 PNG 的替代：一键生成交互式离线单文件 HTML，
+双击即看、可分发（全部 JS 内联，无外部引用）。需要可选依赖
+`pip install plotly`（或 `pip install "profmw[viz]"`，不影响中间件本体）。
+
+```bash
+python -m profmw.report run_dummy/ -o report.html      # 命令行
+# 可选: --types ddr_bw --prefix CH --top 10
+```
+
+```python
+from profmw.report import export_report
+export_report(store, "report.html", types=["dram_bw"], t_range=(0.0, 10000.0))
+```
+
+每个 profiling 类型一个区块，含四种视图（复用 `window_series` 切片逻辑，
+支持同样的 modules/prefix/t_range 过滤）：
+
+| 视图 | 用途 |
+|---|---|
+| 热力图（模块×时间） | 一眼看出通道混叠、热点、空洞等分布问题 |
+| 波形叠加图 | 每模块一条曲线；默认亮出均值 Top-N，点图例切换；框选缩放、悬停读数 |
+| 模块排名图 | 按窗口均值降序，前 Top-N 标红，快速锁定异常模块 |
+| 统计表 | 每模块 窗口数/均值/最大/最小/方差/NaN 占比，与 `aggregate` 口径一致 |
+
 ## Dummy 数据（测试用）
 
 ```python
@@ -137,6 +163,7 @@ python examples/demo.py          # 端到端演示：构建矩阵->保存->读�
 | `aggregate(ptype, modules=, module_prefix=, t_range=, agg=, skipna=, interp=)` | 沿时间轴聚合观测值 |
 | `window_series(...)` | 逐窗口切片（同参数） |
 | `validate(nan_ratio_warn=)` | 数据健康检查 |
+| `profmw.report.export_report(store, out, ...)` | HTML 观测报告（可选依赖 plotly） |
 
 ## 设计约定
 
