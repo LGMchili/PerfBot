@@ -1,7 +1,7 @@
 """profmw 演示：构建矩阵数据集 -> 按项目格式保存 -> 从保存目录读取 -> 求窗口统计值 -> HTML 报告。
 
 用法:
-    python examples/demo.py          # 需要生成报告时先 pip install plotly
+    python examples/demo.py          # 未装 plotly 时自动跳过报告生成
 """
 
 import shutil
@@ -98,8 +98,11 @@ def main():
     print(loaded.validate())
 
     print("\n== 6. 生成 HTML 观测报告（热力图/波形/排名/统计表）==")
-    out = export_report(loaded, REPORT)
-    print(f"  {out}（双击打开，离线可用）")
+    try:
+        out = export_report(loaded, REPORT)
+        print(f"  {out}（双击打开，离线可用）")
+    except ImportError:
+        print("  跳过：未安装 plotly。pip install plotly 后重跑即可生成报告")
 
 
 if __name__ == "__main__":
