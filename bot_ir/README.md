@@ -1,0 +1,160 @@
+# bot_ir — NPU Profiling 数据中间件
+
+NPU 性能分析框架的 **L0 IR 层数据中间件**（对应《NPU-Agent-Profiling 第一性原理分析》3.2 节）：
+把 raw profiling 数据封装成带标签的二维矩阵，向上层（L2 诊断 Agent 等）提供廉价、确定性的
+统计查询服务。所有数据加工、算术、验证在本层完成，LLM 只负责提议查询、不直接算数。
+
+## 数据模型
+
+```
+ProfilingStore = { profiling类型 → 二维矩阵 } + 两级 meta
+```
+
+- **行标**：模块名，平铺字符串（如 `CH00`、`CORE017`）
+- **列标**：打点时间，float，升序；各类型时间轴彼此独立（采样率不同不要求对齐）
+- **矩阵值**：窗口内基础统计值（口径由写入方在 meta 中声明）
+- **run meta**：benchmark、芯片版本、采集日期等
+- **类型 meta**：单位（unit）、统计口径（stat）、描述、来源
+
+数据规模定位：每类型 <1000 模块 × <100 万打点均可，典型场景（<100 × 1 万）下聚合查询毫秒级。
+
+## 落盘格式（单 run 单目录）
+
+```
+run_case003/
+├── meta.json              # run meta + 每类型 meta，人类可读
+└── types/
+    └── dram_bw.csv        # module,0.0,100.0,200.0,...  行=模块，列=时间戳
+```
+
+矩阵即普通 CSV（首列 `module`），与 raw 数据同构，可肉眼检查、可被任何工具读取；
+列标用 `repr(float)` 写出，读回精确无损。手工摆一个这种目录（不经 save）也能直接 load。
+`save(path, zip_pack=True)` 可打包为 `path.zip` 单文件分发。
+
+## 安装
+
+唯一重依赖为 pandas：
+
+```bash
+pip install -e bot_ir          # 或在 bot_ir/ 内: pip install -e .
+```
+
+## 快速上手
+
+### 1. 接入数据（两个入口）
+
+**矩阵形态**（真实 raw 数据/内部脚本输出的主路径）：
+
+```python
+import pandas as pd
+from profmw import ProfilingStore
+
+df = pd.read_csv("real_raw.csv", index_col=0)      # 行=模块，列=时间
+store = ProfilingStore(meta={"benchmark": "bw_gather", "chip": "X9-v0.9"})
+store.add_matrix("dram_bw", df, meta={"unit": "GB/s", "stat": "窗口内均值"})
+# 列标字符串/int64 会被自动归一为 float64；重复行标/列标会报错
+```
+
+**长表形态**（厂商逐事件导出的表格，窗口分桶后转矩阵）：
+
+```python
+rec = pd.read_csv("vendor_events.csv")            # 需含 time/module/value 三列
+store.add_type_from_records("dram_bw", rec, window=100.0, bucket_how="mean",
+                            meta={"unit": "GB/s", "stat": "窗口内均值"})
+# window=None 表示 rec 的时间已是打点时间，直接透视
+# 注意：module/time 为 NaN 的记录会被静默丢弃
+```
+
+### 2. 保存 / 加载
+
+```python
+store.save("run_case003/")                 # 目录；已存在会拒绝，防覆盖
+store.save("run_case003", zip_pack=True)   # 生成 run_case003.zip
+loaded = ProfilingStore.load("run_case003/")
+loaded.list_types()                        # {"dram_bw": {"unit": "GB/s", ...}}
+loaded.get_matrix("dram_bw")               # 返回矩阵副本
+```
+
+### 3. 聚合查询（性能观测值现算，不落盘）
+
+```python
+store.aggregate("dram_bw", agg="sum")                                # 全模块全时段总和
+store.aggregate("dram_bw", modules=["CH0", "CH1"],
+                t_range=(1000.0, 5000.0), agg="max")                 # 指定模块+时间范围
+store.aggregate("dram_bw", module_prefix="CORE",
+                t_range=(None, 5000.0), agg="var")                   # 前缀过滤+开端时间
+```
+
+- `agg` ∈ `sum / mean / var / max / min / count`；`var` 为样本方差（ddof=1）
+- `t_range=(t0, t1)`，任一端可为 `None`（开放区间）；只支持范围查询，不支持单点等值取值
+- 缺失值为 NaN，默认 `skipna=True`（`False` 时 NaN 参与运算并传播；count 例外，见 docstring）
+- 时间范围超出数据范围、t0>t1 均报带上下文的 ValueError
+
+**逐窗口序列**（聚合前的切片，供画图/进一步分析）：
+
+```python
+store.window_series("dram_bw", modules=["CH2"], t_range=(1550.0, 2450.0))
+```
+
+### 4. 边界插值
+
+查询边界不在打点时间上时，`interp="linear"` 由相邻两列插出边界虚拟值：
+
+```python
+store.aggregate("dram_bw", t_range=(1550.0, 2450.0), agg="min", interp="linear")
+store.window_series("dram_bw", t_range=(1550.0, 2450.0), interp="linear")
+# 首末列为虚拟边界点；不外推（超出数据范围不产生数据）；
+# 某模块相邻列含 NaN 时该模块边界保持 NaN
+```
+
+### 5. 校验
+
+```python
+report = store.validate()       # 检查：空矩阵/inf -> error，NaN 占比超阈值 -> warn
+print(report)                   # 逐类型一行；report.ok 为整体判定
+```
+
+## Dummy 数据（测试用）
+
+```python
+from profmw.dummy import make_dummy_store, make_dummy_records
+
+store = make_dummy_store(aliasing=True, hotspot=True)
+# ddr_bw:              96 个 DDR 通道（CH00~CH95）
+#   aliasing=True      注入"单通道混叠"病态分布（少数通道 ~99，其余 ~1）
+# core_read_outstanding: 120 个核（CORE000~CORE119）
+#   hotspot=True       注入热点核
+# seed 参数保证确定性；make_dummy_records() 返回 raw 长表供测试接入流程
+```
+
+命令行生成数据集（`run_dummy/` 中间件目录 + `run_dummy_raw/` 矩阵 CSV）：
+
+```bash
+python examples/make_dummy.py --aliasing
+python examples/demo.py          # 端到端演示：构建矩阵->保存->读取->窗口统计
+```
+
+## API 速查
+
+| 接口 | 说明 |
+|---|---|
+| `add_matrix(ptype, df, meta=)` | 矩阵形态接入（检查去重、归一 float 列标、排序） |
+| `add_type_from_records(ptype, rec, window=, bucket_how=, meta=)` | 长表分桶转矩阵 |
+| `save(path, zip_pack=False)` / `load(path)` | CSV+meta.json 目录（或 zip）读写 |
+| `list_types()` / `get_matrix(ptype)` | 类型清单（含 meta）/ 矩阵副本 |
+| `aggregate(ptype, modules=, module_prefix=, t_range=, agg=, skipna=, interp=)` | 沿时间轴聚合观测值 |
+| `window_series(...)` | 逐窗口切片（同参数） |
+| `validate(nan_ratio_warn=)` | 数据健康检查 |
+
+## 设计约定
+
+- 各类型时间轴独立，不做重采样对齐；跨类型联合分析由上层显式处理
+- 模块名平铺，组聚合靠 `modules` 列表或 `module_prefix` 前缀，不做层级解析
+- 统计口径（sum/mean/...）查询时现算，存储只保存窗口基础统计值
+- 单 run 单目录；多 run 对比属上层（L1 期望层）逻辑
+
+## 测试
+
+```bash
+cd bot_ir && python -m pytest tests -v      # 59 个用例
+```
