@@ -149,7 +149,8 @@ store = make_dummy_store(aliasing=True, hotspot=True)
 
 ```bash
 python examples/make_dummy.py --aliasing
-python examples/demo.py          # 端到端演示：构建矩阵->保存->读取->窗口统计
+python examples/demo.py          # 端到端演示：构建三组矩阵(ddr_bw/96通道rx_req深度/
+                                 #   120核outstanding)->保存->读取->窗口统计->HTML报告
 ```
 
 ## API 速查
