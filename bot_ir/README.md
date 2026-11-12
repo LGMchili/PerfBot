@@ -57,18 +57,6 @@ store.add_matrix("dram_bw", df, meta={"unit": "GB/s", "stat": "窗口内均值"}
 > `window=` 分桶、`bucket_how=` 定口径后转矩阵），供将来接入厂商逐事件导出使用，
 > 日常矩阵数据不经过它。详见 docstring。
 
-**延时分布（硬件直方图计数）**：raw 为每 (模块, 窗口) 一行的直方图计数快照时，
-按分位数展开为若干张标准矩阵入库：
-
-```python
-hist = pd.read_csv("dma_lat_hist.csv")   # time/module 列 + 每桶一列计数（顺序对应 bins）
-store.add_type_from_histogram("dma_lat", hist, bins=[0, 32, 64, 128, 256, 512],
-                              quantiles=(0.5, 0.9, 0.99), meta={"unit": "ns"})
-# 生成 dma_lat.p50 / dma_lat.p90 / dma_lat.p99 三张普通矩阵：
-# 零计数 (模块, 窗口) 为 NaN；此后 save/load/聚合/热力图/HTML 报告零改动复用。
-# 分位数在桶内线性插值；raw 直方图留在 raw 层归档，需要新分位数时重新 ingest 即可。
-```
-
 ### 2. 保存 / 加载
 
 ```python
@@ -118,9 +106,9 @@ report = store.validate()       # 检查：空矩阵/inf -> error，NaN 占比�
 print(report)                   # 逐类型一行；report.ok 为整体判定
 ```
 
-## 观测报告（HTML）
+## 观测器（HTML）
 
-人肉看 CSV / 静态 PNG 的替代：一键生成交互式离线单文件 HTML，
+人肉看 CSV / 静态 PNG 的替代：多面板交互观测器，离线单文件 HTML，
 双击即看、可分发（全部 JS 内联，无外部引用）。需要可选依赖
 `pip install plotly`（或 `pip install "profmw[viz]"`，不影响中间件本体）。
 
@@ -134,15 +122,21 @@ from profmw.report import export_report
 export_report(store, "report.html", types=["dram_bw"], t_range=(0.0, 10000.0))
 ```
 
-每个 profiling 类型一个区块，含四种视图（复用 `window_series` 切片逻辑，
-支持同样的 modules/prefix/t_range 过滤）：
+界面：默认一个面板，点击 **“＋ 新增波形框”** 追加面板做同轴对比；点面板右上角
+**×** 移除面板（任意面板均可删，至少保留一个）。每个面板独立选择 profiling
+类型与视图（波形 / 热力图 / 统计表），面板下方是统计条。
 
-| 视图 | 用途 |
-|---|---|
-| 热力图（模块×时间） | 一眼看出通道混叠、热点、空洞等分布问题 |
-| 波形叠加图 | 每模块一条曲线；默认亮出均值 Top-N，点图例切换；框选缩放、悬停读数 |
-| 模块排名图 | 按窗口均值降序，前 Top-N 标红，快速锁定异常模块 |
-| 统计表 | 每模块 窗口数/均值/最大/最小/方差/NaN 占比，与 `aggregate` 口径一致 |
+- **框选测量（不缩放）**：拖拽框选 = 测量区间，波形原地不动，统计条实时给出
+  选区内的 均值/最大/最小/样本数（波形视图只统计图例可见的曲线）；未选中时
+  显示全区间基线，双击清除选区；框选只取水平（时间）范围
+- **缩放**：工具栏按钮（滚轮缩放已关闭），双击复位；**时间轴联动**——任一面板
+  缩放/复位，其余波形、热力图面板同步，便于"带宽 vs 队列深度"同轴对比
+- **Σ 求和曲线**：波形视图面板可勾选，追加一条红色加粗曲线 = 当前图例可见
+  模块的逐时间点求和；点图例选择参与求和的模块，曲线实时重算；显示该曲线时，
+  框选统计会单独追加一段 Σ 曲线的选区内 均值/最大/最小/样本数
+- 波形视图默认亮出窗口均值 Top-N，点图例切换显隐，图例开关也会刷新统计口径
+- 热力图（模块×时间）一眼看出通道混叠、热点、空洞等分布问题
+- 统计表视图给出每模块 窗口数/均值/最大/最小/方差/NaN 占比全量口径
 
 ## Dummy 数据（测试用）
 
@@ -171,7 +165,6 @@ python examples/demo.py          # 端到端演示：构建三组矩阵(ddr_bw/9
 |---|---|
 | `add_matrix(ptype, df, meta=)` | 矩阵形态接入（检查去重、归一 float 列标、排序） |
 | `add_type_from_records(ptype, rec, window=, bucket_how=, meta=)` | 长表分桶转矩阵 |
-| `add_type_from_histogram(ptype, rec, bins=, quantiles=, meta=)` | 硬件直方图计数 → 分位数矩阵 |
 | `save(path, zip_pack=False)` / `load(path)` | CSV+meta.json 目录（或 zip）读写 |
 | `list_types()` / `get_matrix(ptype)` | 类型清单（含 meta）/ 矩阵副本 |
 | `aggregate(ptype, modules=, module_prefix=, t_range=, agg=, skipna=, interp=)` | 沿时间轴聚合观测值 |

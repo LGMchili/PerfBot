@@ -97,7 +97,7 @@ def main():
     print("\n== 5. 校验 ==")
     print(loaded.validate())
 
-    print("\n== 6. 生成 HTML 观测报告（热力图/波形/排名/统计表）==")
+    print("\n== 6. 生成 HTML 观测报告（热力图/波形/统计表）==")
     try:
         out = export_report(loaded, REPORT)
         print(f"  {out}（双击打开，离线可用）")

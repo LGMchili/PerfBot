@@ -1,6 +1,5 @@
-"""export_report：单文件 HTML 观测报告生成测试。"""
+"""export_report：多面板 HTML 观测器测试（时间轴联动 + 选框放大区间统计）。"""
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -28,33 +27,85 @@ def _report_html(store, tmp_path, **kw):
     return out.read_text(encoding="utf-8")
 
 
-class TestExportReport:
-    def test_html_contains_type_meta_and_modules(self, small_store, tmp_path):
-        html = _report_html(small_store, tmp_path)
-        assert "dram_bw" in html
-        assert "GB/s" in html and "窗口内均值" in html
-        assert "CH0" in html and "CH1" in html
-        assert "benchmark" in html and "X9" in html  # run meta
+def _app_js(html):
+    """应用脚本 = 最后一个 <script> 块（前面的块是内联 plotly 库，
+    其自身含 plotly_selected 等事件名字符串，不能作为断言对象）。"""
+    return html.rsplit("<script>", 1)[1]
 
-    def test_four_views_present(self, small_store, tmp_path):
+
+class TestExportReport:
+    def test_multi_panel_layout_with_add_button(self, small_store, tmp_path):
         html = _report_html(small_store, tmp_path)
-        # 热力图/波形/排名 = 3 个 plotly 图，统计表 = 1 个 HTML table
-        assert html.count("plotly-graph-div") == 3
-        assert "<table" in html
-        assert html.count("Plotly.newPlot") == 3  # 内联 JS 仅在首个图携带完整库
-        assert html.count('src="https') == 0      # 无外部引用，真正离线
+        assert html.count('id="panels"') == 1        # 面板容器
+        assert "新增波形框" in html                   # 追加面板入口
+        for view in ("波形", "热力图", "统计表"):  # 每面板可选视图
+            assert view in html
+        assert "排名" not in html                    # 排名视图已移除
+
+    def test_data_embedded_as_json_with_meta(self, small_store, tmp_path):
+        html = _report_html(small_store, tmp_path)
+        assert "const DATA" in html and '"dram_bw"' in html
+        assert '"CH0"' in html and '"CH1"' in html
+        assert "GB/s" in html and "benchmark" in html and "X9" in html
+
+    def test_selection_stats_and_axis_sync_js(self, small_store, tmp_path):
+        # 框选=测量（不缩放），统计条显示选区/全区间；缩放仍联动时间轴
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert "plotly_selected" in app     # 框选事件 -> 选区统计
+        assert "plotly_deselect" in app     # 双击清除 -> 回到全区间基线
+        assert "plotly_relayout" in app     # 缩放事件 -> 时间轴联动
+        assert "plotly_restyle" in app      # 图例开关 -> 统计口径刷新
+        assert "scrollZoom: false" in app   # 关闭滚轮缩放（缩放走工具栏）
+        assert "sameRange" in app          # 联动前数值比较，防 relayout 乒乓挂死
+        assert "selectdirection" in app     # 水平框选（只取时间区间）
+        assert "均值" in app and "最大" in app and "最小" in app
+        assert "xaxis.range" in app         # 时间轴联动载体
+
+    def test_sum_curve_feature(self, small_store, tmp_path):
+        # Σ 求和曲线：开关 + 可见模块逐点求和 + 不污染统计口径
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert "求和曲线" in app           # 面板开关
+        assert "Σ 可见模块" in app          # 求和曲线图例名
+        assert "sumCurve" in app            # 逐时间点求和（跟随图例可见性）
+        assert 'startsWith("Σ")' in app    # 统计/求和口径排除 Σ 曲线自身
+
+    def test_any_panel_removable_but_keep_one(self, small_store, tmp_path):
+        # 面板删除：数量 >= 2 时每个面板（含第一个）都有 ×；只剩一个时隐藏 ×
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert "panels.length > 1" in app       # 按数量而非下标控制删除入口
+        assert 'i ? "" : "none"' not in app     # 不再按下标永久保留第一个面板
+
+    def test_ranking_view_removed(self, small_store, tmp_path):
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert '"ranking"' not in app           # 视图选项移除
+        assert 'type: "bar"' not in app         # 排名条形图渲染移除
+        assert "排名图无需框选" not in app        # 排名视图统计文案移除
+
+    def test_selection_stats_include_sum_curve_when_shown(self, small_store, tmp_path):
+        # 显示 Σ 曲线时，选框统计单独追加 Σ 段；不显示时保持原口径
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert "sumStatsIn" in app               # 选区内 Σ 曲线统计
+        assert "Σ: 均值" in app                  # 统计条单独追加 Σ 一段
+        assert 'pn.view === "lines" && pn.showSum' in app  # 仅在显示 Σ 时追加
+
+    def test_fixed_chart_heights_prevent_growth(self, small_store, tmp_path):
+        # 视图切换会把内联高度写死在图 div 上，重渲染时 autosize 按残留高度
+        # 自适应 -> 面板只涨不缩。修复：显式固定高度 + 重渲染前清残留。
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert "layout.height = 460" in app        # 波形/热力图固定高度
+        assert 'chartEl.style.height = ""' in app  # 重渲染前清除内联高度残留
+
+    def test_fully_offline(self, small_store, tmp_path):
+        html = _report_html(small_store, tmp_path)
+        assert 'src="https' not in html
+        assert "Plotly" in html
 
     def test_type_filter(self, small_store, tmp_path):
         other = small_store.get_matrix("dram_bw")
         small_store.add_matrix("util", other, meta={"unit": "%"})
         html = _report_html(small_store, tmp_path, types=["util"])
-        assert "util" in html
-        assert html.count("plotly-graph-div") == 3  # 只有一个类型的 3 张图
-
-    def test_stats_table_values_match_aggregate(self, small_store, tmp_path):
-        html = _report_html(small_store, tmp_path)
-        # CH1 行均值 = (10+20+30)/3 = 20.0，应出现在统计表中
-        assert "20.0" in html or "20" in html
+        assert '"util"' in html
+        assert '"dram_bw"' not in html            # 未选类型不内嵌
 
     def test_missing_plotly_raises_hint(self, small_store, tmp_path, monkeypatch):
         import sys
@@ -73,5 +124,6 @@ class TestCli:
         out = tmp_path / "rep.html"
         rc = main([str(run), "-o", str(out)])
         assert rc == 0
-        assert out.exists()
-        assert out.read_text(encoding="utf-8").count("plotly-graph-div") == 3
+        html = out.read_text(encoding="utf-8")
+        assert html.count('id="panels"') == 1
+        assert '"dram_bw"' in html
