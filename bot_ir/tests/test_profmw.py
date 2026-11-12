@@ -1,5 +1,8 @@
 """profmw 测试：存储、raw 接入、查询聚合、插值、校验、dummy 数据。"""
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -223,6 +226,87 @@ class TestAddTypeFromRecords:
         with pytest.raises(ValueError, match="bucket_how"):
             store.add_type_from_records("t", make_small_records(), window=100.0,
                                         bucket_how="median")
+
+
+# ---------------------------------------------------------------- 硬件直方图接入
+
+def make_hist_records():
+    """每行一个 (模块, 窗口) 的直方图计数快照，2 桶 [0,10) [10,20)。
+
+    CH0@0:   [10, 30]  总 40 样本
+    CH0@100: [0, 20]   总 20 样本
+    CH1@0:   [0, 0]    无样本
+    """
+    return pd.DataFrame({
+        "time": [0.0, 100.0, 0.0],
+        "module": ["CH0", "CH0", "CH1"],
+        "c0": [10.0, 0.0, 0.0],
+        "c1": [30.0, 20.0, 0.0],
+    })
+
+
+BINS = [0.0, 10.0, 20.0]
+
+
+class TestAddTypeFromHistogram:
+    def test_quantile_interpolation_matches_hand_calc(self):
+        store = ProfilingStore()
+        store.add_type_from_histogram("dma_lat", make_hist_records(), bins=BINS,
+                                      quantiles=(0.5, 0.9), meta={"unit": "ns"})
+        p50 = store.get_matrix("dma_lat.p50")
+        # CH0@0: 总40, target=20, 累计[10,40] -> 落在桶1, 10 + (20-10)/30*10
+        assert p50.loc["CH0", 0.0] == pytest.approx(10.0 + 10.0 / 3.0)
+        # CH0@100: 总20, target=10, 累计[0,20] -> 桶1, 10 + 0.5*10
+        assert p50.loc["CH0", 100.0] == pytest.approx(15.0)
+        p90 = store.get_matrix("dma_lat.p90")
+        # CH0@0: target=36, 10 + (36-10)/30*10
+        assert p90.loc["CH0", 0.0] == pytest.approx(10.0 + 26.0 / 3.0)
+
+    def test_zero_counts_cell_is_nan(self):
+        store = ProfilingStore()
+        store.add_type_from_histogram("dma_lat", make_hist_records(), bins=BINS,
+                                      quantiles=(0.5,))
+        assert np.isnan(store.get_matrix("dma_lat.p50").loc["CH1", 0.0])
+        # NaN 语义与普通矩阵一致：skipna 聚合可正常工作
+        v = store.aggregate("dma_lat.p50", agg="mean")
+        assert v == pytest.approx((10 + 10 / 3 + 15.0) / 2)
+
+    def test_derived_types_are_normal_matrices_with_meta(self):
+        store = ProfilingStore()
+        store.add_type_from_histogram("dma_lat", make_hist_records(), bins=BINS,
+                                      quantiles=(0.5, 0.999), meta={"unit": "ns"})
+        names = set(store.list_types())
+        assert names == {"dma_lat.p50", "dma_lat.p99.9"}
+        assert store.list_types()["dma_lat.p50"]["unit"] == "ns"
+        assert store.list_types()["dma_lat.p50"]["quantile"] == 0.5
+        # 落盘往返后仍是普通类型
+        with tempfile.TemporaryDirectory() as tmp:
+            store.save(Path(tmp) / "r")
+            loaded = ProfilingStore.load(Path(tmp) / "r")
+            assert "dma_lat.p99.9" in loaded.list_types()
+
+    def test_count_columns_auto_detected_and_explicit(self):
+        store = ProfilingStore()
+        rec = make_hist_records().rename(columns={"c0": "binA", "c1": "binB"})
+        store.add_type_from_histogram("t", rec, bins=BINS, quantiles=(0.5,))
+        assert "t.p50" in store.list_types()
+        store2 = ProfilingStore()
+        store2.add_type_from_histogram("t", rec, bins=BINS, quantiles=(0.5,),
+                                       count_cols=["binB", "binA"])  # 显式乱序
+        # binB=[30,20,0] 作为第一桶: CH0@0 target=20, 累计[30,40] -> 桶0, 0+20/30*10
+        assert store2.get_matrix("t.p50").loc["CH0", 0.0] == pytest.approx(20.0 / 3.0)
+
+    def test_bin_count_mismatch_rejected(self):
+        store = ProfilingStore()
+        with pytest.raises(ValueError, match="桶数"):
+            store.add_type_from_histogram("t", make_hist_records(), bins=[0.0, 10.0],
+                                          quantiles=(0.5,))
+
+    def test_invalid_quantile_rejected(self):
+        store = ProfilingStore()
+        with pytest.raises(ValueError, match="quantile"):
+            store.add_type_from_histogram("t", make_hist_records(), bins=BINS,
+                                          quantiles=(1.5,))
 
 
 # ---------------------------------------------------------------- 聚合查询

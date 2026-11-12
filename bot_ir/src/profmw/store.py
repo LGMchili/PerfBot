@@ -20,6 +20,26 @@ _META_TYPES_KEY = "types"
 _TYPES_DIR = "types"
 
 
+def _hist_quantile(counts: np.ndarray, edges: np.ndarray, q: float) -> np.ndarray:
+    """逐行从直方图计数计算分位数（桶内线性插值），零计数行为 NaN。"""
+    total = counts.sum(axis=1)
+    out = np.full(counts.shape[0], np.nan)
+    m = total > 0
+    if not m.any():
+        return out
+    c, target = counts[m], q * total[m]
+    cum = np.cumsum(c, axis=1)
+    rows = np.arange(len(c))
+    j = (cum >= target[:, None]).argmax(axis=1)  # 第一个累计达到 target 的桶
+    prev = np.where(j > 0, cum[rows, j - 1], 0.0)
+    inbin = c[rows, j]
+    frac = np.clip(
+        (target - prev) / np.where(inbin > 0, inbin, 1.0), 0.0, 1.0
+    )
+    out[m] = edges[j] + frac * (edges[j + 1] - edges[j])
+    return out
+
+
 def _check_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """入库前检查并规整矩阵，返回排序列后的副本。"""
     if not df.index.is_unique:
@@ -93,6 +113,59 @@ class ProfilingStore:
             df = grouped.unstack("win")
         df = df.astype(float)
         self.add_matrix(ptype, df, meta=meta)
+
+    def add_type_from_histogram(
+        self,
+        ptype: str,
+        records: pd.DataFrame,
+        bins,
+        quantiles=(0.5, 0.9, 0.99),
+        time_col: str = "time",
+        module_col: str = "module",
+        count_cols: list[str] | None = None,
+        meta: dict | None = None,
+    ) -> list[str]:
+        """硬件直方图计数 -> 每个分位数一张标准矩阵（分位数展开存储）。
+
+        records 每行一个 (模块, 窗口) 快照：时间/模块列 + 每桶一列计数，
+        count 列顺序须与 bins 一一对应（默认取其余列的文件顺序）。
+        生成类型名 f"{ptype}.p{分位数*100}"（如 dma_lat.p50 / dma_lat.p99.9），
+        作为普通矩阵入库，后续 save/load/聚合/报告零改动复用；
+        meta 追加 quantile 与 base_type 字段。零计数的 (模块, 窗口) 为 NaN。
+        """
+        edges = np.asarray(bins, dtype=float)
+        if edges.ndim != 1 or len(edges) < 2 or not np.all(np.diff(edges) > 0):
+            raise ValueError(f"bins 必须为严格递增的桶边界数组，收到: {bins!r}")
+        quantiles = tuple(quantiles)
+        for q in quantiles:
+            if not 0.0 < q <= 1.0:
+                raise ValueError(f"quantile 必须在 (0, 1] 内，收到: {q}")
+        if count_cols is None:
+            count_cols = [c for c in records.columns if c not in (time_col, module_col)]
+        if len(count_cols) != len(edges) - 1:
+            raise ValueError(
+                f"count 列数 {len(count_cols)} 应等于桶数 {len(edges) - 1}"
+                "（count 列顺序须与 bins 对应）"
+            )
+        missing = [c for c in (time_col, module_col, *count_cols) if c not in records.columns]
+        if missing:
+            raise ValueError(f"records 缺少列: {missing}")
+        counts = records[count_cols].to_numpy(dtype=float)
+        created = []
+        for q in quantiles:
+            vals = _hist_quantile(counts, edges, q)
+            long = pd.DataFrame({
+                module_col: records[module_col].to_numpy(),
+                time_col: records[time_col].astype(float).to_numpy(),
+                "value": vals,
+            })
+            wide = long.pivot_table(index=module_col, columns=time_col,
+                                    values="value", aggfunc="first", dropna=False)
+            qname = f"{ptype}.p{q * 100:g}"
+            self.add_matrix(qname, wide.astype(float),
+                            meta={**(meta or {}), "quantile": q, "base_type": ptype})
+            created.append(qname)
+        return created
 
     # ------------------------------------------------------------ 查询
 

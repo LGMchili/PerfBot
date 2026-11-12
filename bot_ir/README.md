@@ -57,6 +57,18 @@ store.add_matrix("dram_bw", df, meta={"unit": "GB/s", "stat": "窗口内均值"}
 > `window=` 分桶、`bucket_how=` 定口径后转矩阵），供将来接入厂商逐事件导出使用，
 > 日常矩阵数据不经过它。详见 docstring。
 
+**延时分布（硬件直方图计数）**：raw 为每 (模块, 窗口) 一行的直方图计数快照时，
+按分位数展开为若干张标准矩阵入库：
+
+```python
+hist = pd.read_csv("dma_lat_hist.csv")   # time/module 列 + 每桶一列计数（顺序对应 bins）
+store.add_type_from_histogram("dma_lat", hist, bins=[0, 32, 64, 128, 256, 512],
+                              quantiles=(0.5, 0.9, 0.99), meta={"unit": "ns"})
+# 生成 dma_lat.p50 / dma_lat.p90 / dma_lat.p99 三张普通矩阵：
+# 零计数 (模块, 窗口) 为 NaN；此后 save/load/聚合/热力图/HTML 报告零改动复用。
+# 分位数在桶内线性插值；raw 直方图留在 raw 层归档，需要新分位数时重新 ingest 即可。
+```
+
 ### 2. 保存 / 加载
 
 ```python
@@ -159,6 +171,7 @@ python examples/demo.py          # 端到端演示：构建三组矩阵(ddr_bw/9
 |---|---|
 | `add_matrix(ptype, df, meta=)` | 矩阵形态接入（检查去重、归一 float 列标、排序） |
 | `add_type_from_records(ptype, rec, window=, bucket_how=, meta=)` | 长表分桶转矩阵 |
+| `add_type_from_histogram(ptype, rec, bins=, quantiles=, meta=)` | 硬件直方图计数 → 分位数矩阵 |
 | `save(path, zip_pack=False)` / `load(path)` | CSV+meta.json 目录（或 zip）读写 |
 | `list_types()` / `get_matrix(ptype)` | 类型清单（含 meta）/ 矩阵副本 |
 | `aggregate(ptype, modules=, module_prefix=, t_range=, agg=, skipna=, interp=)` | 沿时间轴聚合观测值 |
