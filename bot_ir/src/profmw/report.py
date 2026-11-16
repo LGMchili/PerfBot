@@ -65,6 +65,9 @@ th { background: #f5f7fa; position: sticky; top: 0; }
 _JS_APP = r"""
 const DATA = __DATA__;
 const TOPN = __TOPN__;
+const ALL_TYPES = Object.keys(DATA).sort();
+// 模块分组：类型 meta 的 module 字段；缺省归"默认"组
+const moduleOf = ptype => (DATA[ptype].meta && DATA[ptype].meta.module) || "默认";
 const VIEWS = [["lines", "波形"], ["heatmap", "热力图"], ["ring", "ring矩阵"],
                ["stats", "统计表"]];
 const TIME_VIEWS = new Set(["lines", "heatmap"]);
@@ -165,7 +168,8 @@ function addPanel(type, view) {
   wrap.className = "panel";
   wrap.innerHTML =
     `<div class="panel-head">` +
-    `<select class="p-type"></select>` +
+    `<select class="p-mod" title="模块"></select>` +
+    `<select class="p-stat" title="统计项"></select>` +
     `<select class="p-view"></select>` +
     `<label class="p-sum" title="显示当前可见模块的逐时间点求和曲线"><input type="checkbox"> Σ 求和曲线</label>` +
     `<button class="p-close" title="移除面板">×</button>` +
@@ -176,13 +180,25 @@ function addPanel(type, view) {
     `<div class="p-stats" id="${id}-stats"></div>`;
   document.getElementById("panels").appendChild(wrap);
 
-  const tsel = wrap.querySelector(".p-type");
-  Object.keys(DATA).sort().forEach(t => {
+  const modSel = wrap.querySelector(".p-mod");
+  [...new Set(ALL_TYPES.map(moduleOf))].sort().forEach(m => {
     const o = document.createElement("option");
-    o.value = o.textContent = t;
-    tsel.appendChild(o);
+    o.value = o.textContent = m;
+    modSel.appendChild(o);
   });
-  tsel.value = type;
+  const statSel = wrap.querySelector(".p-stat");
+  const fillStats = mod => {
+    statSel.innerHTML = "";
+    ALL_TYPES.filter(t => moduleOf(t) === mod).forEach(t => {
+      const o = document.createElement("option");
+      o.value = o.textContent = t;
+      statSel.appendChild(o);
+    });
+  };
+  const initMod = moduleOf(type);
+  modSel.value = initMod;
+  fillStats(initMod);
+  statSel.value = type;
   const vsel = wrap.querySelector(".p-view");
   VIEWS.forEach(([v, name]) => {
     const o = document.createElement("option");
@@ -200,9 +216,16 @@ function addPanel(type, view) {
       panel.noc.timer = null;
     }
   };
-  tsel.onchange = () => {
+  modSel.onchange = () => {           // 切模块：统计项列表跟随刷新
     stopNocTimer();
-    panel.type = tsel.value; panel.xrange = null; panel.selrange = null;
+    fillStats(modSel.value);
+    statSel.value = statSel.options[0].value;
+    panel.type = statSel.value; panel.xrange = null; panel.selrange = null;
+    renderPanel(panel);
+  };
+  statSel.onchange = () => {
+    stopNocTimer();
+    panel.type = statSel.value; panel.xrange = null; panel.selrange = null;
     renderPanel(panel);
   };
   vsel.onchange = () => {
@@ -572,11 +595,9 @@ function setStats(pn, html) {
 }
 
 document.getElementById("add-panel").onclick = () => {
-  const ts = Object.keys(DATA).sort();
-  addPanel(ts[panels.length % ts.length], "lines");
+  addPanel(ALL_TYPES[panels.length % ALL_TYPES.length], "lines");
 };
-const types = Object.keys(DATA);
-addPanel(types[0], "lines");
+addPanel(ALL_TYPES[0], "lines");
 """
 
 

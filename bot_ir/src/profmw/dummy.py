@@ -118,13 +118,17 @@ NOC_CHANNELS = 4
 NOC_CS = 25
 
 _NOC_META = {
-    "noc_up_fail_count": {"unit": "count", "stat": "窗口内失败次数",
+    "noc_up_fail_count": {"module": "dummy", "unit": "count",
+                          "stat": "窗口内失败次数",
                           "description": "各节点上 ring 失败计数"},
-    "noc_down_fail_count": {"unit": "count", "stat": "窗口内失败次数",
+    "noc_down_fail_count": {"module": "dummy", "unit": "count",
+                            "stat": "窗口内失败次数",
                             "description": "各节点下 ring 失败计数"},
-    "noc_left_util": {"unit": "%", "stat": "窗口内平均占用率",
+    "noc_left_util": {"module": "dummy", "unit": "%",
+                      "stat": "窗口内平均占用率",
                       "description": "环左方向链路占用率"},
-    "noc_right_util": {"unit": "%", "stat": "窗口内平均占用率",
+    "noc_right_util": {"module": "dummy", "unit": "%",
+                       "stat": "窗口内平均占用率",
                        "description": "环右方向链路占用率"},
 }
 

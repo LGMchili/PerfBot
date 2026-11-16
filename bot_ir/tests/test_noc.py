@@ -120,6 +120,7 @@ class TestMakeNocRawDir:
         assert set(manifest) == set(NOC_TYPES)
         assert manifest["noc_up_fail_count"]["unit"] == "count"
         assert manifest["noc_left_util"]["unit"] == "%"
+        assert manifest["noc_up_fail_count"]["module"] == "dummy"  # 模块分组字段
 
     def test_anomaly_congested_segment_stands_out(self, tmp_path):
         from profmw.dummy import make_noc_raw_dir

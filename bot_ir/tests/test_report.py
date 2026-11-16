@@ -47,6 +47,13 @@ class TestExportReport:
         app = _app_js(_report_html(small_store, tmp_path))
         assert "Object.keys(DATA).sort()" in app
 
+    def test_cascading_type_dropdown(self, small_store, tmp_path):
+        # 类型选择两级化：模块 -> 统计项；分组来自类型 meta 的 module 字段
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert 'class="p-mod"' in app and 'class="p-stat"' in app  # 两个下拉
+        assert "moduleOf" in app                          # 按 meta.module 分组
+        assert "默认" in app                               # 无 module meta 归入默认组
+
     def test_header_shows_only_run_meta(self, small_store, tmp_path):
         html = _report_html(small_store, tmp_path)
         head = html.split("<body>")[1].split("<script>")[0]

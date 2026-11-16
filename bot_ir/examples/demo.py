@@ -1,11 +1,15 @@
 """profmw 演示：构建矩阵数据集 + NoC 接入 -> 保存 -> 读取 -> 窗口统计 -> HTML 报告。
 
+所有产物统一落进 run_demo/：中间件本体（meta.json + types/*.csv）与
+NoC raw 契约示例（raw/ 子目录，manifest + 指标矩阵 CSV）。
+
 用法:
     python examples/demo.py          # 未装 plotly 时自动跳过报告生成
 """
 
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -19,7 +23,6 @@ from profmw.noc import add_noc_raw
 from profmw.report import export_report
 
 OUT = Path("run_demo")
-NOC_RAW = Path("run_demo_noc_raw")
 REPORT = Path("run_demo_report.html")
 
 TIMES = np.arange(0.0, 5000.0, 100.0)  # 50 个打点时间，列标
@@ -38,14 +41,15 @@ def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
     bw = rng.uniform(20.0, 30.0, size=(8, len(TIMES)))
     bw[2] = rng.uniform(90.0, 100.0, size=len(TIMES))
     out.append(("ddr_bw", build_matrix([f"CH{i}" for i in range(8)], bw),
-                {"unit": "GB/s", "stat": "窗口内均值", "description": "DDR 通道带宽"}))
+                {"module": "dummy", "unit": "GB/s", "stat": "窗口内均值",
+                 "description": "DDR 通道带宽"}))
 
     # 2. rx_req_avg_depth: 96 通道 RX 请求平均队列深度，CH00/CH47/CH95 注入积压
     depth = rng.uniform(2.0, 8.0, size=(96, len(TIMES)))
     depth[[0, 47, 95]] = rng.uniform(40.0, 60.0, size=(3, len(TIMES)))
     out.append(("rx_req_avg_depth",
                 build_matrix([f"CH{i:02d}" for i in range(96)], depth),
-                {"unit": "count", "stat": "窗口内平均深度",
+                {"module": "dummy", "unit": "count", "stat": "窗口内平均深度",
                  "description": "各通道 RX 请求平均队列深度"}))
 
     # 3. core_read_outstanding: 120 核读 outstanding，热点核注入 60~80
@@ -53,7 +57,7 @@ def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
     osts[[7, 119]] = rng.uniform(60.0, 80.0, size=(2, len(TIMES)))
     out.append(("core_read_outstanding",
                 build_matrix([f"CORE{i:03d}" for i in range(120)], osts),
-                {"unit": "count", "stat": "窗口内均值",
+                {"module": "dummy", "unit": "count", "stat": "窗口内均值",
                  "description": "各核窗口内平均读 outstanding 数"}))
     return out
 
@@ -66,18 +70,19 @@ def main():
         print(f"  {ptype}: {df.shape[0]} 模块 × {df.shape[1]} 时间点, unit={meta['unit']}")
 
     print("\n== 2. NoC ring raw 接入（manifest + 每指标一张矩阵 CSV）==")
-    raw = make_noc_raw_dir(NOC_RAW)      # 8 ring × 4 通道 × 25 CS，R03_C02 CS12~14 注入环段拥塞
-    add_noc_raw(store, raw)              # 校验行标约定，levels 写入 run meta
-    print(f"  raw 目录: {raw}/")
-    for ptype in ("noc_up_fail_count", "noc_left_util"):
-        print(f"  {ptype}: 800 模块 × 200 时间点（已入库）")
+    with tempfile.TemporaryDirectory() as tmp:   # scratch：run 结束后不留额外目录
+        raw = make_noc_raw_dir(Path(tmp) / "noc_raw")   # 8 ring × 4 通道 × 25 CS，R03_C02 CS12~14 注入环段拥塞
+        add_noc_raw(store, raw)                  # 校验行标约定，levels 写入 run meta
+        for ptype in ("noc_up_fail_count", "noc_left_util"):
+            print(f"  {ptype}: 800 模块 × 200 时间点（已入库）")
 
-    print("\n== 3. 按项目格式保存（meta.json + types/*.csv）==")
-    if OUT.exists():
-        shutil.rmtree(OUT)
-    store.save(OUT)
+        print("\n== 3. 按项目格式保存（meta.json + types/*.csv + raw/）==")
+        if OUT.exists():
+            shutil.rmtree(OUT)
+        store.save(OUT)
+        shutil.move(str(raw), str(OUT / "raw"))  # raw 契约示例归档进 run 目录
     files = sorted(f for f in OUT.rglob("*") if f.is_file())
-    print(f"  {OUT}/（{len(files)} 个文件：meta.json + {len(files) - 1} 张指标 CSV）")
+    print(f"  {OUT}/（{len(files)} 个文件，含 raw/ 子目录的契约示例）")
 
     print("\n== 4. 从保存的目录读取 ==")
     loaded = ProfilingStore.load(OUT)
