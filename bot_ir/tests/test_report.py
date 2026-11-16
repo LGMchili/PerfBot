@@ -42,6 +42,17 @@ class TestExportReport:
             assert view in html
         assert "排名" not in html                    # 排名视图已移除
 
+    def test_type_dropdown_sorted_by_name(self, small_store, tmp_path):
+        # 类型下拉按名称排序显示，而非入库顺序
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert "Object.keys(DATA).sort()" in app
+
+    def test_header_shows_only_run_meta(self, small_store, tmp_path):
+        html = _report_html(small_store, tmp_path)
+        head = html.split("<body>")[1].split("<script>")[0]
+        assert "profiling 观测" not in head          # 开头不再有大标题
+        assert "benchmark=b" in head and "chip=X9" in head  # 仅显示 run 信息
+
     def test_data_embedded_as_json_with_meta(self, small_store, tmp_path):
         html = _report_html(small_store, tmp_path)
         assert "const DATA" in html and '"dram_bw"' in html
@@ -94,6 +105,20 @@ class TestExportReport:
         app = _app_js(_report_html(small_store, tmp_path))
         assert "layout.height = 460" in app        # 波形/热力图固定高度
         assert 'chartEl.style.height = ""' in app  # 重渲染前清除内联高度残留
+
+    def test_ring_matrix_view(self, small_store, tmp_path):
+        # ring矩阵：无总览曲线图，仅时间条（选点/选窗口）+ 数据表 + 通道下拉
+        app = _app_js(_report_html(small_store, tmp_path))
+        assert "ring矩阵" in app                     # 视图选项
+        assert "p-noc" in app                      # 通道/时间条控制区
+        assert "parseNoc" in app                   # 行标三段解析（R_C_CS）
+        assert "nocUpdate" in app                  # 表格/统计渲染
+        assert "n-track" in app                    # 双柄时间条
+        assert "n-h1" in app and "n-h2" in app     # 左右两个手柄
+        assert "回放" in app                       # 播放按钮
+        assert "通道" in app                        # 通道下拉
+        assert "plotly_click" not in app            # 总览图已移除，时间选择走时间条
+        assert "总览" not in app                    # 不再渲染跨模块聚合曲线
 
     def test_fully_offline(self, small_store, tmp_path):
         html = _report_html(small_store, tmp_path)

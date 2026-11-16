@@ -1,4 +1,4 @@
-"""profmw 演示：构建矩阵数据集 -> 按项目格式保存 -> 从保存目录读取 -> 求窗口统计值 -> HTML 报告。
+"""profmw 演示：构建矩阵数据集 + NoC 接入 -> 保存 -> 读取 -> 窗口统计 -> HTML 报告。
 
 用法:
     python examples/demo.py          # 未装 plotly 时自动跳过报告生成
@@ -14,9 +14,12 @@ import numpy as np
 import pandas as pd
 
 from profmw import ProfilingStore
+from profmw.dummy import make_noc_raw_dir
+from profmw.noc import add_noc_raw
 from profmw.report import export_report
 
 OUT = Path("run_demo")
+NOC_RAW = Path("run_demo_noc_raw")
 REPORT = Path("run_demo_report.html")
 
 TIMES = np.arange(0.0, 5000.0, 100.0)  # 50 个打点时间，列标
@@ -37,8 +40,7 @@ def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
     out.append(("ddr_bw", build_matrix([f"CH{i}" for i in range(8)], bw),
                 {"unit": "GB/s", "stat": "窗口内均值", "description": "DDR 通道带宽"}))
 
-    # 2. rx_req_avg_depth: 96 通道 RX 请求平均队列深度，多数通道 2~8，
-    #    CH00/CH47/CH95 注入积压（深度 40~60）——热力图上呈亮条
+    # 2. rx_req_avg_depth: 96 通道 RX 请求平均队列深度，CH00/CH47/CH95 注入积压
     depth = rng.uniform(2.0, 8.0, size=(96, len(TIMES)))
     depth[[0, 47, 95]] = rng.uniform(40.0, 60.0, size=(3, len(TIMES)))
     out.append(("rx_req_avg_depth",
@@ -46,8 +48,7 @@ def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
                 {"unit": "count", "stat": "窗口内平均深度",
                  "description": "各通道 RX 请求平均队列深度"}))
 
-    # 3. core_read_outstanding: 120 核读 outstanding，多数核 4~16，
-    #    热点核 CORE007/CORE119 注入 60~80
+    # 3. core_read_outstanding: 120 核读 outstanding，热点核注入 60~80
     osts = rng.uniform(4.0, 16.0, size=(120, len(TIMES)))
     osts[[7, 119]] = rng.uniform(60.0, 80.0, size=(2, len(TIMES)))
     out.append(("core_read_outstanding",
@@ -59,48 +60,55 @@ def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
 
 def main():
     print("== 1. 构建矩阵数据集（行=模块，列=float 打点时间）==")
-    store = ProfilingStore(meta={"benchmark": "demo", "chip": "X9-v0.9", "date": "2026-11-11"})
+    store = ProfilingStore(meta={"benchmark": "demo", "chip": "X9-v0.9", "date": "2026-11-16"})
     for ptype, df, meta in build_types():
         store.add_matrix(ptype, df, meta=meta)
         print(f"  {ptype}: {df.shape[0]} 模块 × {df.shape[1]} 时间点, unit={meta['unit']}")
 
-    print("\n== 2. 按项目格式保存（meta.json + types/*.csv）==")
+    print("\n== 2. NoC ring raw 接入（manifest + 每指标一张矩阵 CSV）==")
+    raw = make_noc_raw_dir(NOC_RAW)      # 8 ring × 4 通道 × 25 CS，R03_C02 CS12~14 注入环段拥塞
+    add_noc_raw(store, raw)              # 校验行标约定，levels 写入 run meta
+    print(f"  raw 目录: {raw}/")
+    for ptype in ("noc_up_fail_count", "noc_left_util"):
+        print(f"  {ptype}: 800 模块 × 200 时间点（已入库）")
+
+    print("\n== 3. 按项目格式保存（meta.json + types/*.csv）==")
     if OUT.exists():
         shutil.rmtree(OUT)
     store.save(OUT)
-    for f in sorted(OUT.rglob("*")):
-        print(f"  {f}")
+    files = sorted(f for f in OUT.rglob("*") if f.is_file())
+    print(f"  {OUT}/（{len(files)} 个文件：meta.json + {len(files) - 1} 张指标 CSV）")
 
-    print("\n== 3. 从保存的目录读取 ==")
+    print("\n== 4. 从保存的目录读取 ==")
     loaded = ProfilingStore.load(OUT)
     print("  run meta :", loaded.meta)
     print("  类型     :", {t: m["unit"] for t, m in loaded.list_types().items()})
 
-    print("\n== 4. 求窗口内统计值 ==")
+    print("\n== 5. 求窗口内统计值 ==")
     print("  ddr_bw  [0, 5000) 全通道总和 =",
           round(loaded.aggregate("ddr_bw", agg="sum"), 1))
     print("  rx_req  全时段最大深度 =",
           round(loaded.aggregate("rx_req_avg_depth", agg="max"), 1))
-    print("  rx_req  CH00 均值（积压通道） =",
-          round(loaded.aggregate("rx_req_avg_depth", modules=["CH00"], agg="mean"), 1))
-    print("  rx_req  其余通道均值 =",
-          round(loaded.aggregate("rx_req_avg_depth", module_prefix="CH",
-                                 modules=[f"CH{i:02d}" for i in range(1, 95)],
-                                 agg="mean"), 1))
     print("  core    热点核均值 =",
           round(loaded.aggregate("core_read_outstanding",
                                  modules=["CORE007", "CORE119"], agg="mean"), 1))
     print("  core    [1550, 2450) 边界插值 min =",
           round(loaded.aggregate("core_read_outstanding", t_range=(1550.0, 2450.0),
                                  agg="min", interp="linear"), 1))
+    print("  --- NoC 层级查询（前缀 = 层级）---")
+    print("  拥塞注入点 R03_C02_CS13 失败计数均值 =",
+          round(loaded.aggregate("noc_up_fail_count",
+                                 modules=["R03_C02_CS13"], agg="mean"), 1))
+    print("  R01_ 整条 ring 失败计数总和 =",
+          round(loaded.aggregate("noc_up_fail_count", module_prefix="R01_", agg="sum")))
 
-    print("\n== 5. 校验 ==")
+    print("\n== 6. 校验 ==")
     print(loaded.validate())
 
-    print("\n== 6. 生成 HTML 观测报告（热力图/波形/统计表）==")
+    print("\n== 7. 生成 HTML 观测报告（波形/热力图/ring矩阵/统计表）==")
     try:
         out = export_report(loaded, REPORT)
-        print(f"  {out}（双击打开，离线可用）")
+        print(f"  {out}（双击打开；NoC 类型切到\"ring矩阵\"视图体验）")
     except ImportError:
         print("  跳过：未安装 plotly。pip install plotly 后重跑即可生成报告")
 

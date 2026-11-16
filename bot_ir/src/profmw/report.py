@@ -21,7 +21,6 @@ from profmw.store import ProfilingStore
 _CSS = """
 body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 16px auto;
        max-width: 1280px; color: #222; }
-h1 { font-size: 20px; margin: 0 0 4px; }
 .meta { color: #666; font-size: 13px; margin-bottom: 12px; }
 .controls { margin-bottom: 12px; }
 .controls button { border: 1px solid #4a90d9; background: #fff; color: #4a90d9;
@@ -47,12 +46,26 @@ th { background: #f5f7fa; position: sticky; top: 0; }
 .p-stats { margin-top: 6px; padding: 6px 10px; background: #f5f7fa;
            border-radius: 4px; font-size: 13px; min-height: 18px; }
 .p-stats b { color: #d62728; }
+.p-noc { display: none; align-items: center; gap: 12px; margin-bottom: 6px;
+         flex-wrap: wrap; font-size: 13px; }
+.n-track { position: relative; flex: 1 1 240px; height: 26px; cursor: pointer;
+           touch-action: none; }
+.n-track::before { content: ""; position: absolute; left: 0; right: 0; top: 11px;
+                   height: 4px; background: #e2e6ea; border-radius: 2px; }
+.n-fill { position: absolute; top: 11px; height: 4px; background: #4a90d9;
+          border-radius: 2px; }
+.n-h { position: absolute; top: 4px; width: 12px; height: 18px; background: #4a90d9;
+       border-radius: 3px; cursor: ew-resize; }
+.n-time { color: #666; min-width: 90px; }
+.n-play { border: 1px solid #ccc; background: #fff; border-radius: 4px;
+          padding: 2px 10px; cursor: pointer; font-size: 13px; }
+.noc-table td { min-width: 52px; }
 """
 
 _JS_APP = r"""
 const DATA = __DATA__;
 const TOPN = __TOPN__;
-const VIEWS = [["lines", "波形"], ["heatmap", "热力图"],
+const VIEWS = [["lines", "波形"], ["heatmap", "热力图"], ["ring", "ring矩阵"],
                ["stats", "统计表"]];
 const TIME_VIEWS = new Set(["lines", "heatmap"]);
 const panels = [];
@@ -157,13 +170,14 @@ function addPanel(type, view) {
     `<label class="p-sum" title="显示当前可见模块的逐时间点求和曲线"><input type="checkbox"> Σ 求和曲线</label>` +
     `<button class="p-close" title="移除面板">×</button>` +
     `<span class="p-info"></span></div>` +
+    `<div class="p-noc"></div>` +
     `<div class="p-chart" id="${id}"></div>` +
     `<div class="p-table"></div>` +
     `<div class="p-stats" id="${id}-stats"></div>`;
   document.getElementById("panels").appendChild(wrap);
 
   const tsel = wrap.querySelector(".p-type");
-  Object.keys(DATA).forEach(t => {
+  Object.keys(DATA).sort().forEach(t => {
     const o = document.createElement("option");
     o.value = o.textContent = t;
     tsel.appendChild(o);
@@ -178,13 +192,21 @@ function addPanel(type, view) {
   vsel.value = view;
 
   const panel = { id, type, view, xrange: null, selrange: null, showSum: false,
-                  wired: false, el: wrap };
+                  noc: null, wired: false, el: wrap };
   panels.push(panel);
+  const stopNocTimer = () => {
+    if (panel.noc && panel.noc.timer) {
+      clearInterval(panel.noc.timer);
+      panel.noc.timer = null;
+    }
+  };
   tsel.onchange = () => {
+    stopNocTimer();
     panel.type = tsel.value; panel.xrange = null; panel.selrange = null;
     renderPanel(panel);
   };
   vsel.onchange = () => {
+    stopNocTimer();
     panel.view = vsel.value; panel.xrange = null; panel.selrange = null;
     renderPanel(panel);
   };
@@ -198,6 +220,7 @@ function addPanel(type, view) {
 }
 
 function removePanel(panel) {
+  if (panel.noc && panel.noc.timer) clearInterval(panel.noc.timer);
   Plotly.purge(panel.id);
   panel.el.remove();
   panels.splice(panels.indexOf(panel), 1);
@@ -216,6 +239,7 @@ function renderPanel(pn) {
   const chartEl = document.getElementById(pn.id);
   const tblEl = pn.el.querySelector(".p-table");
   pn.el.querySelector(".p-sum").style.display = pn.view === "lines" ? "" : "none";
+  pn.el.querySelector(".p-noc").style.display = "none";   // ring矩阵分支再按需打开
   pn.el.querySelector(".p-info").textContent =
     `${d.modules.length} 模块 × ${d.times.length} 窗口` +
     ` ｜ ${(d.meta && d.meta.unit) || ""}`;
@@ -226,6 +250,28 @@ function renderPanel(pn) {
     tblEl.style.display = "block";
     tblEl.innerHTML = tableHTML(d);
     setStats(pn, "统计表为全量口径；区间统计请切换到波形/热力图视图");
+    return;
+  }
+  if (pn.view === "ring") {              // ring矩阵：无 plotly 图，仅时间条+数据表
+    pn.el.querySelector(".p-noc").style.display = "flex";
+    const parsed = parseNoc(d, pn.type);
+    Plotly.purge(pn.id);
+    pn.wired = false;
+    chartEl.style.display = "none";
+    if (!parsed) {
+      tblEl.style.display = "none";
+      setStats(pn, "行标不符合 R_C_CS 三段约定，无法使用ring矩阵视图");
+      return;
+    }
+    if (!pn.noc) pn.noc = { channel: parsed.channels[0], i1: 0, i2: 0,
+                            timer: null, parsed: parsed };
+    const st = pn.noc;
+    st.parsed = parsed;
+    if (!parsed.channels.includes(st.channel)) st.channel = parsed.channels[0];
+    if (!(st.i1 >= 0 && st.i1 < d.times.length)) st.i1 = 0;
+    if (!(st.i2 >= st.i1 && st.i2 < d.times.length)) st.i2 = st.i1;
+    buildNocBar(pn, d, parsed);
+    nocUpdate(pn);
     return;
   }
   tblEl.style.display = "none";
@@ -292,6 +338,172 @@ function updateSum(pn) {
   Plotly.restyle(gd, { y: [next] }, [idx]);
 }
 
+// ------------------------------------------------------------ ring矩阵视图（NoC）
+
+const _parseCache = new Map();
+function parseNoc(d, ptype) {
+  if (_parseCache.has(ptype)) return _parseCache.get(ptype);
+  const rings = new Set(), channels = new Set(), map = {};
+  for (let i = 0; i < d.modules.length; i++) {
+    const t = String(d.modules[i]).split("_");
+    if (t.length !== 3 || t.some(x => !x)) { _parseCache.set(ptype, null); return null; }
+    rings.add(t[0]); channels.add(t[1]);
+    map[t[0] + "_" + t[1] + "_" + t[2]] = i;
+  }
+  const csByCh = {};
+  [...channels].sort().forEach(c => {
+    const s = new Set();
+    d.modules.forEach(m => { const t = String(m).split("_"); if (t[1] === c) s.add(t[2]); });
+    csByCh[c] = [...s].sort();
+  });
+  const parsed = { rings: [...rings].sort(), channels: [...channels].sort(),
+                   csByCh, map };
+  _parseCache.set(ptype, parsed);
+  return parsed;
+}
+
+const _derivedCache = new Map();
+function nocDerived(d, ptype) {
+  // 全局色标范围（固定色标，跨时刻可比）
+  if (_derivedCache.has(ptype)) return _derivedCache.get(ptype);
+  let mn = Infinity, mxv = -Infinity;
+  d.modules.forEach((m, mi) => d.values[mi].forEach(v => {
+    if (v == null || !isFinite(v)) return;
+    if (v < mn) mn = v;
+    if (v > mxv) mxv = v;
+  }));
+  const out = { min: isFinite(mn) ? mn : 0,
+                maxVal: isFinite(mxv) ? mxv : (isFinite(mn) ? mn : 1) };
+  _derivedCache.set(ptype, out);
+  return out;
+}
+
+function cellColor(v, sc) {
+  if (v == null || !isFinite(v)) return "";
+  const k = sc.maxVal === sc.min ? 0
+    : Math.max(0, Math.min(1, (v - sc.min) / (sc.maxVal - sc.min)));
+  const r = Math.round(255 + (214 - 255) * k);   // 白 -> 红(#d62728) 线性插值
+  const g = Math.round(255 + (39 - 255) * k);
+  const b = Math.round(255 + (40 - 255) * k);
+  return `rgb(${r},${g},${b})`;
+}
+
+function nocCell(d, rowIdx, st) {
+  if (rowIdx == null) return null;
+  if (st.i2 > st.i1) {                 // 窗口模式：[t(i1), t(i2)] 窗口内均值
+    const x0 = d.times[st.i1], x1 = d.times[st.i2];
+    let s = 0, n = 0;
+    for (let ti = 0; ti < d.times.length; ti++) {
+      const t = d.times[ti];
+      if (t < x0 || t > x1) continue;
+      const v = d.values[rowIdx][ti];
+      if (v != null && isFinite(v)) { s += v; n++; }
+    }
+    return n ? s / n : null;
+  }
+  return d.values[rowIdx][st.i1];     // 选点模式
+}
+
+function buildNocBar(pn, d, parsed) {
+  const st = pn.noc, nT = d.times.length;
+  const bar = pn.el.querySelector(".p-noc");
+  bar.innerHTML =
+    `<label>通道 <select class="n-ch"></select></label>` +
+    `<div class="n-track" title="单击=选点；按住拖动或拖动手柄=选时间窗">` +
+    `<div class="n-fill"></div><div class="n-h n-h1"></div><div class="n-h n-h2"></div></div>` +
+    `<span class="n-time"></span>` +
+    `<button class="n-play">▶ 回放</button>`;
+  const chSel = bar.querySelector(".n-ch");
+  parsed.channels.forEach(c => {
+    const o = document.createElement("option");
+    o.value = o.textContent = c;
+    chSel.appendChild(o);
+  });
+  chSel.value = st.channel;
+  chSel.onchange = () => { st.channel = chSel.value; nocUpdate(pn); };
+  st.h1El = bar.querySelector(".n-h1");
+  st.h2El = bar.querySelector(".n-h2");
+  st.fillEl = bar.querySelector(".n-fill");
+  st.timeEl = bar.querySelector(".n-time");
+  st.playBtn = bar.querySelector(".n-play");
+
+  const track = bar.querySelector(".n-track");
+  const idxAt = ev => {
+    const r = track.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+    return Math.round(frac * (nT - 1));
+  };
+  let drag = null;   // "h1" | "h2" | "track"
+  const move = ev => {
+    const i = idxAt(ev);
+    if (drag === "h1") st.i1 = Math.min(i, st.i2);
+    else if (drag === "h2") st.i2 = Math.max(i, st.i1);
+    else if (drag === "track") st.i2 = Math.max(i, st.i1);  // 从选点向右扩展窗口
+    nocUpdate(pn);
+  };
+  track.addEventListener("pointerdown", ev => {
+    const i = idxAt(ev);
+    if (ev.target === st.h1El) drag = "h1";
+    else if (ev.target === st.h2El) drag = "h2";
+    else { drag = "track"; st.i1 = st.i2 = i; }   // 单击=选点，按住拖=窗口
+    track.setPointerCapture(ev.pointerId);
+    move(ev);
+    ev.preventDefault();
+  });
+  track.addEventListener("pointermove", ev => { if (drag) move(ev); });
+  track.addEventListener("pointerup", () => { drag = null; });
+
+  st.playBtn.onclick = () => {
+    if (st.timer) {
+      clearInterval(st.timer); st.timer = null;
+      st.playBtn.textContent = "▶ 回放";
+    } else {
+      st.timer = setInterval(() => {   // 回放沿选点模式逐点推进
+        st.i1 = st.i2 = (st.i2 + 1) % nT;
+        nocUpdate(pn);
+      }, 150);
+      st.playBtn.textContent = "⏸ 暂停";
+    }
+  };
+}
+
+function nocUpdate(pn) {
+  if (pn.view !== "ring" || !pn.noc || !pn.noc.parsed) return;
+  const d = DATA[pn.type], st = pn.noc, parsed = st.parsed;
+  const sc = nocDerived(d, pn.type);
+  const csList = parsed.csByCh[st.channel] || [];
+  const head = "<tr><th></th>" + csList.map(c => `<th>${c}</th>`).join("") + "</tr>";
+  const rows = parsed.rings.map(r => {
+    const cells = csList.map(cs => {
+      const mi = parsed.map[r + "_" + st.channel + "_" + cs];
+      const v = nocCell(d, mi, st);
+      const txt = v == null || !isFinite(v) ? "-" : p(v);
+      return `<td style="background:${cellColor(v, sc)}">${txt}</td>`;
+    }).join("");
+    return `<tr><td>${r}</td>${cells}</tr>`;
+  }).join("");
+  const tblEl = pn.el.querySelector(".p-table");
+  tblEl.style.display = "block";
+  tblEl.innerHTML =
+    `<table class="noc-table"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
+
+  const nT = d.times.length;
+  const frac = i => nT > 1 ? i / (nT - 1) : 0;
+  if (st.h1El) {
+    st.h1El.style.left = `calc(${frac(st.i1) * 100}% - 6px)`;
+    st.h2El.style.left = `calc(${frac(st.i2) * 100}% - 6px)`;
+    st.fillEl.style.left = `${frac(st.i1) * 100}%`;
+    st.fillEl.style.width = `${(frac(st.i2) - frac(st.i1)) * 100}%`;
+  }
+  const isWin = st.i2 > st.i1;
+  if (st.timeEl) st.timeEl.textContent = isWin
+    ? `窗口 [${p(d.times[st.i1])}, ${p(d.times[st.i2])}]`
+    : `t=${p(d.times[st.i1])}`;
+  setStats(pn, `ring矩阵 ｜ 通道 ${st.channel} ｜ ${isWin
+    ? `窗口 [${p(d.times[st.i1])}, ${p(d.times[st.i2])}] 均值（单击时间条回到选点）`
+    : `时刻 t=${p(d.times[st.i1])}（按住拖动时间条可选窗口）`} ｜ 色标 [${p(sc.min)}, ${p(sc.maxVal)}]`);
+}
+
 function onSelect(pn, ev) {
   if (ev && ev.range && ev.range.x) pn.selrange = [ev.range.x[0], ev.range.x[1]];
   updateStats(pn);
@@ -316,6 +528,7 @@ function onRelayout(pn, ev) {
 }
 
 function updateStats(pn) {
+  if (pn.view === "ring") { nocUpdate(pn); return; }
   if (!TIME_VIEWS.has(pn.view)) {
     setStats(pn, "统计表为全量口径；区间统计请切换到波形/热力图视图");
     return;
@@ -359,7 +572,7 @@ function setStats(pn, html) {
 }
 
 document.getElementById("add-panel").onclick = () => {
-  const ts = Object.keys(DATA);
+  const ts = Object.keys(DATA).sort();
   addPanel(ts[panels.length % ts.length], "lines");
 };
 const types = Object.keys(DATA);
@@ -400,7 +613,10 @@ def export_report(
             "values": df.to_numpy(dtype=float).tolist(),  # NaN 输出为 JS 字面量
         }
 
-    meta_line = " · ".join(f"{k}={v}" for k, v in store.meta.items()) or "（无 run meta）"
+    meta_line = " · ".join(
+        "levels=" + ">".join(lv["key"] for lv in v) if k == "levels" else f"{k}={v}"
+        for k, v in store.meta.items()
+    ) or "（无 run meta）"  # levels 压缩为 R>C>CS，避免整段 JSON 糊在页头
     app_js = (_JS_APP
               .replace("__DATA__", json.dumps(data, ensure_ascii=False))
               .replace("__TOPN__", str(int(top_n))))
@@ -408,7 +624,7 @@ def export_report(
         "<!DOCTYPE html><html><head><meta charset='utf-8'>",
         "<title>profmw 观测器</title>",
         f"<style>{_CSS}</style></head><body>",
-        "<h1>profiling 观测</h1>", f"<p class='meta'>{meta_line}</p>",
+        f"<p class='meta'>{meta_line}</p>",
         "<div class='controls'>",
         "<button id=\"add-panel\">＋ 新增波形框</button>",
         "</div>",

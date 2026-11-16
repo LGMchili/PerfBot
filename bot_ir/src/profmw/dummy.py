@@ -3,10 +3,15 @@
 - ddr_bw：96 个 DDR 通道带宽（CH00~CH95），可选"单通道混叠"病态分布
   （少数通道负载极高、其余接近零，复刻 case-003 的 [99, 1.5, 1, 0.5] 形态）；
 - core_read_outstanding：120 个核的读 outstanding 统计（CORE000~CORE119），
-  可选热点核模式。
+  可选热点核模式；
+- NoC ring：8 ring × 4 通道 × 25 CS（R00_C00_CS00 ~ R07_C03_CS24），
+  可选注入 R03_C02 通道 CS12~CS14 环段拥塞。
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -104,3 +109,60 @@ def make_dummy_store(
             },
         )
     return store
+
+
+# ---------------------------------------------------------------- NoC ring 生成
+
+NOC_RINGS = 8
+NOC_CHANNELS = 4
+NOC_CS = 25
+
+_NOC_META = {
+    "noc_up_fail_count": {"unit": "count", "stat": "窗口内失败次数",
+                          "description": "各节点上 ring 失败计数"},
+    "noc_down_fail_count": {"unit": "count", "stat": "窗口内失败次数",
+                            "description": "各节点下 ring 失败计数"},
+    "noc_left_util": {"unit": "%", "stat": "窗口内平均占用率",
+                      "description": "环左方向链路占用率"},
+    "noc_right_util": {"unit": "%", "stat": "窗口内平均占用率",
+                       "description": "环右方向链路占用率"},
+}
+
+
+def make_noc_raw_dir(out_dir, anomaly: bool = True, seed: int = 0,
+                     n_windows: int = N_WINDOWS) -> Path:
+    """生成 noc_raw 目录（manifest.json + 每指标一张矩阵 CSV）。
+
+    布局：8 ring × 4 通道 × 25 CS = 800 行/指标。anomaly=True 时在
+    R03_C02 通道的 CS12~CS14 注入环段拥塞（失败计数高、左右占用率近饱和）。
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    times = np.arange(n_windows) * WINDOW
+    modules = [f"R{r:02d}_C{c:02d}_CS{s:02d}"
+               for r in range(NOC_RINGS)
+               for c in range(NOC_CHANNELS)
+               for s in range(NOC_CS)]
+    n = len(modules)
+    mats = {
+        "noc_up_fail_count": rng.integers(0, 4, (n, n_windows)).astype(float),
+        "noc_down_fail_count": rng.integers(0, 4, (n, n_windows)).astype(float),
+        "noc_left_util": rng.uniform(20.0, 60.0, (n, n_windows)),
+        "noc_right_util": rng.uniform(20.0, 60.0, (n, n_windows)),
+    }
+    if anomaly:
+        for i, m in enumerate(modules):
+            if m.startswith("R03_C02_CS") and int(m[-2:]) in (12, 13, 14):
+                mats["noc_up_fail_count"][i] = rng.integers(80, 121, n_windows)
+                mats["noc_down_fail_count"][i] = rng.integers(60, 101, n_windows)
+                mats["noc_left_util"][i] = rng.uniform(88.0, 99.0, n_windows)
+                mats["noc_right_util"][i] = rng.uniform(88.0, 99.0, n_windows)
+    manifest = {}
+    for ptype, arr in mats.items():
+        pd.DataFrame(arr, index=modules, columns=times).to_csv(
+            out / f"{ptype}.csv")
+        manifest[ptype] = dict(_NOC_META[ptype])
+    (out / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out

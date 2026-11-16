@@ -106,6 +106,37 @@ report = store.validate()       # 检查：空矩阵/inf -> error，NaN 占比�
 print(report)                   # 逐类型一行；report.ok 为整体判定
 ```
 
+## NoC ring 数据
+
+层级数据（ring → 通道 → CS 节点 → 指标 × 时间）的接入与观测：
+
+**数据约定**：指标即类型（每指标一个矩阵），行标 = `{R}{ring}_{C}{通道}_{CS}{节点}`
+零填充编码（如 `R03_C02_CS13`），字典序 = 物理序。零填充使**前缀过滤即层级聚合**：
+`module_prefix="R01_"` = 整条 ring，`"R01_C02_"` = 单通道。层级声明写入 run meta
+（`levels`，入库时自动）。
+
+**接入**：raw 目录 = `manifest.json`（各指标 unit/stat meta）+ 每指标一张矩阵 CSV：
+
+```python
+from profmw import ProfilingStore
+from profmw.noc import add_noc_raw
+
+store = ProfilingStore(meta={"benchmark": "...", "chip": "..."})
+add_noc_raw(store, "noc_raw/")        # 校验行标符合层级约定，levels 写入 run meta
+```
+
+**ring矩阵视图**（观测器面板视图之一）：行 = ring、列 = CS、单元格 = 数值+按值染色
+（色标全局固定），表格上方仅**双柄时间条 + 通道下拉**。时间条：**单击 = 选点**（显示该
+时刻切片）、**按住拖动或拖动手柄 = 选时间窗**（单元格切换为窗口内均值）、▶ 按钮沿
+时刻回放。行标不符合 `R_C_CS` 三段约定的类型选中该视图时给出提示。
+
+```bash
+python examples/demo.py               # NoC 接入已并入 demo：生成 8 ring × 4 通道 × 25 CS
+                                      # 数据（R03_C02 通道 CS12~14 注入环段拥塞），
+                                      # raw 契约示例见 run_demo_noc_raw/
+python -m profmw.report run_demo -o run_demo_report.html
+```
+
 ## 观测器（HTML）
 
 人肉看 CSV / 静态 PNG 的替代：多面板交互观测器，离线单文件 HTML，
@@ -155,8 +186,8 @@ store = make_dummy_store(aliasing=True, hotspot=True)
 
 ```bash
 python examples/make_dummy.py --aliasing
-python examples/demo.py          # 端到端演示：构建三组矩阵(ddr_bw/96通道rx_req深度/
-                                 #   120核outstanding)->保存->读取->窗口统计->HTML报告
+python examples/demo.py          # 端到端演示：构建矩阵数据集 + NoC raw 接入 ->
+                                 #   保存 -> 读取 -> 窗口/层级统计 -> HTML 报告
 ```
 
 ## API 速查
