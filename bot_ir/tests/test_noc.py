@@ -9,8 +9,8 @@ import pytest
 from profmw import ProfilingStore
 from profmw.noc import DEFAULT_LEVELS, add_noc_raw
 
-MODULES = [f"R{r:02d}_C{c:02d}_CS{s:02d}"
-           for r in range(2) for c in range(2) for s in range(3)]
+MODULES = [f"R{r:02d}_{ch}_CS{s:02d}"
+           for r in range(2) for ch in ("Req", "Snp") for s in range(3)]
 TIMES = [0.0, 100.0, 200.0]
 
 
@@ -52,7 +52,7 @@ class TestAddNocRaw:
         assert store.meta["levels"] == DEFAULT_LEVELS
 
     def test_row_labels_must_conform_to_levels(self, tmp_path):
-        raw, _ = make_raw_dir(tmp_path, modules=["bad_label", "R00_C00_CS00", "x"])
+        raw, _ = make_raw_dir(tmp_path, modules=["bad_label", "R00_Req_CS00", "x"])
         store = ProfilingStore()
         with pytest.raises(ValueError, match="行标.*不符合"):
             add_noc_raw(store, raw)
@@ -109,9 +109,9 @@ class TestMakeNocRawDir:
             assert (raw / f"{ptype}.csv").exists()
         df = pd.read_csv(raw / "noc_up_fail_count.csv", index_col=0)
         assert df.shape[0] == 8 * 4 * 25
-        assert list(df.index) == sorted(df.index)   # 字典序 = 环序
-        assert df.index[0] == "R00_C00_CS00"
-        assert df.index[-1] == "R07_C03_CS24"
+        assert df.index[0] == "R00_Req_CS00"
+        assert df.index[-1] == "R07_Dat_CS24"
+        assert {m.split("_")[1] for m in df.index} == {"Req", "Snp", "Rsp", "Dat"}
 
     def test_manifest_declares_meta(self, tmp_path):
         from profmw.dummy import make_noc_raw_dir
@@ -127,11 +127,11 @@ class TestMakeNocRawDir:
         raw = make_noc_raw_dir(tmp_path, anomaly=True)
         df = pd.read_csv(raw / "noc_up_fail_count.csv", index_col=0)
         row_means = df.mean(axis=1)
-        hot = row_means["R03_C02_CS13"]      # 注入拥塞的环段中点
+        hot = row_means["R03_Rsp_CS13"]      # 注入拥塞的环段中点
         median = row_means.median()
         assert hot > 10 * median
         util = pd.read_csv(raw / "noc_left_util.csv", index_col=0)
-        assert util.mean(axis=1)["R03_C02_CS13"] > 80
+        assert util.mean(axis=1)["R03_Rsp_CS13"] > 80
 
     def test_healthy_without_anomaly(self, tmp_path):
         from profmw.dummy import make_noc_raw_dir

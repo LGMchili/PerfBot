@@ -73,7 +73,7 @@ def main():
 
     print("\n== 2. NoC ring raw 接入（manifest + 每指标一张矩阵 CSV）==")
     with tempfile.TemporaryDirectory() as tmp:   # scratch：run 结束后不留额外目录
-        raw = make_noc_raw_dir(Path(tmp) / "noc_raw")   # 8 ring × 4 通道 × 25 CS，R03_C02 CS12~14 注入环段拥塞
+        raw = make_noc_raw_dir(Path(tmp) / "noc_raw")   # 8 ring × 4 通道 × 25 CS，R03_Rsp CS12~14 注入环段拥塞
         add_noc_raw(store, raw)                  # 校验行标约定，levels 写入 run meta
         for ptype in ("noc_up_fail_count", "noc_left_util"):
             print(f"  {ptype}: 800 模块 × 200 时间点（已入库）")
@@ -103,17 +103,17 @@ def main():
           round(loaded.aggregate("core_read_outstanding", t_range=(1550.0, 2450.0),
                                  agg="min", interp="linear"), 1))
     print("  --- NoC 层级查询（前缀 = 层级）---")
-    print("  拥塞注入点 R03_C02_CS13 失败计数均值 =",
+    print("  拥塞注入点 R03_Rsp_CS13 失败计数均值 =",
           round(loaded.aggregate("noc_up_fail_count",
-                                 modules=["R03_C02_CS13"], agg="mean"), 1))
+                                 modules=["R03_Rsp_CS13"], agg="mean"), 1))
     print("  R01_ 整条 ring 失败计数总和 =",
           round(loaded.aggregate("noc_up_fail_count", module_prefix="R01_", agg="sum")))
     print("  --- 分维聚合 magg/tagg ---")
     print("  R01 ring 平均每窗口总失败数 (magg=sum, tagg=mean) =",
           round(loaded.aggregate("noc_up_fail_count", module_prefix="R01_",
                                  magg="sum", tagg="mean"), 1))
-    print("  R03_C02 通道逐窗口失败总数曲线 (magg=sum) 前5点 =",
-          list(loaded.aggregate("noc_up_fail_count", module_prefix="R03_C02_",
+    print("  R03_Rsp 通道逐窗口失败总数曲线 (magg=sum) 前5点 =",
+          list(loaded.aggregate("noc_up_fail_count", module_prefix="R03_Rsp_",
                                 magg="sum").iloc[:5].round(0)))
 
     print("\n== 6. 校验 ==")

@@ -423,7 +423,8 @@ function parseNoc(d) {
     d.modules.forEach(m => { const t = String(m).split("_"); if (t[1] === c) s.add(t[2]); });
     csByCh[c] = [...s].sort();
   });
-  return { rings: [...rings].sort(), channels: [...channels].sort(), csByCh, map };
+  // 通道按模块出现顺序（Req/Snp/Rsp/Dat），不按字典序
+  return { rings: [...rings].sort(), channels: [...channels], csByCh, map };
 }
 
 function nocDerived(d) {
@@ -461,18 +462,6 @@ function nocCell(d, rowIdx) {
     return n ? s / n : null;
   }
   return d.values[rowIdx][st.i1];     // 选点模式
-}
-
-function fillChannels(parsed) {
-  const chSel = document.getElementById("ch-sel");
-  chSel.innerHTML = "";
-  parsed.channels.forEach(c => {
-    const o = document.createElement("option");
-    o.value = o.textContent = c;
-    chSel.appendChild(o);
-  });
-  chSel.value = st.channel;
-  chSel.onchange = () => { st.channel = chSel.value; update(); };
 }
 
 function initTimeBar() {
@@ -571,19 +560,25 @@ function render() {
   const desc = Object.entries(d.meta || {}).map(([k, v]) => `${k}=${v}`).join(" · ");
   info.textContent = `${desc} ｜ ${d.modules.length} 模块 × ${d.times.length} 窗口` +
     (d.downsample ? ` ｜ 时间轴已压缩 ${d.downsample}:1（合并口径=${d.dsh}）` : "");
-  fillChannels(parsed);
   update();
 }
 
-// 模块 -> 统计项 两级类型选择
+// 模块 -> 统计项 两级选择；统计项按「类型.通道」平铺（如 noc_left_util.Req）
+const OPTIONS = [];
+ALL_TYPES.forEach(t => {
+  const parsed = parseNoc(DATA[t]);
+  if (parsed) parsed.channels.forEach(ch => OPTIONS.push({ type: t, channel: ch }));
+});
 const modSel = document.getElementById("mod-sel");
 const statSel = document.getElementById("stat-sel");
 const fillStats = mod => {
   statSel.innerHTML = "";
-  ALL_TYPES.filter(t => moduleOf(t) === mod).forEach(t => {
-    const o = document.createElement("option");
-    o.value = o.textContent = t;
-    statSel.appendChild(o);
+  OPTIONS.forEach((o, i) => {
+    if (moduleOf(o.type) !== mod) return;
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = `${o.type}.${o.channel}`;
+    statSel.appendChild(opt);
   });
 };
 [...new Set(ALL_TYPES.map(moduleOf))].sort().forEach(m => {
@@ -591,21 +586,23 @@ const fillStats = mod => {
   o.value = o.textContent = m;
   modSel.appendChild(o);
 });
+st.type = OPTIONS[0].type;
+st.channel = OPTIONS[0].channel;
 modSel.value = moduleOf(st.type);
 fillStats(modSel.value);
-statSel.value = st.type;
+statSel.value = statSel.options[0].value;
 const onTypeChange = () => {
   if (st.timer) { clearInterval(st.timer); st.timer = null; }
-  st.channel = null; st.i1 = 0; st.i2 = 0;
+  const o = OPTIONS[+statSel.value];
+  st.type = o.type; st.channel = o.channel; st.i1 = 0; st.i2 = 0;
   render();
 };
 modSel.onchange = () => {
   fillStats(modSel.value);
   statSel.value = statSel.options[0].value;
-  st.type = statSel.value;
   onTypeChange();
 };
-statSel.onchange = () => { st.type = statSel.value; onTypeChange(); };
+statSel.onchange = () => onTypeChange();
 
 initTimeBar();
 render();
@@ -763,7 +760,6 @@ def export_ring_report(
         "<div class='p-noc' id='bar' style='display:flex'>",
         "<select id=\"mod-sel\" title=\"模块\"></select>",
         "<select id=\"stat-sel\" title=\"统计项\"></select>",
-        "<select id=\"ch-sel\" title=\"通道\"></select>",
         "<div class='n-track' id='track' title=\"单击=选点；按住拖动或拖动手柄=选时间窗\">",
         "<div class='n-fill'></div><div class='n-h n-h1'></div><div class='n-h n-h2'></div></div>",
         "<span class='n-time' id='tlabel'></span>",

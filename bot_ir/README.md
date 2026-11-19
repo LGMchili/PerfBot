@@ -123,10 +123,10 @@ print(report)                   # 逐类型一行；report.ok 为整体判定
 
 层级数据（ring → 通道 → CS 节点 → 指标 × 时间）的接入与观测：
 
-**数据约定**：指标即类型（每指标一个矩阵），行标 = `{R}{ring}_{C}{通道}_{CS}{节点}`
-零填充编码（如 `R03_C02_CS13`），字典序 = 物理序。零填充使**前缀过滤即层级聚合**：
-`module_prefix="R01_"` = 整条 ring，`"R01_C02_"` = 单通道。层级声明写入 run meta
-（`levels`，入库时自动）。
+**数据约定**：指标即类型（每指标一个矩阵），行标 = `{R}{ring:02d}_{通道}_{CS}{节点:02d}`
+（通道 ∈ `Req / Snp / Rsp / Dat`，如 `R03_Rsp_CS13`）；ring/CS 零填充保证字典序 =
+物理序。**前缀过滤即层级聚合**：`module_prefix="R01_"` = 整条 ring，
+`"R01_Rsp_"` = 单通道。层级声明写入 run meta（`levels`，入库时自动）。
 
 **接入**：raw 目录 = `manifest.json`（各指标 unit/stat meta）+ 每指标一张矩阵 CSV：
 
@@ -139,16 +139,17 @@ add_noc_raw(store, "noc_raw/")        # 校验行标符合层级约定，levels 
 ```
 
 **ring矩阵报告**（与波形观测器分开生成）：行 = ring、列 = CS、单元格 = 数值+按值染色
-（色标全局固定），表格上方仅**双柄时间条 + 通道下拉**。时间条：**单击 = 选点**（显示该
-时刻切片）、**按住拖动或拖动手柄 = 选时间窗**（单元格切换为窗口内均值）、▶ 按钮沿
-时刻回放。纯 DOM 页面，**不依赖 plotly**。缺省自动收录行标符合 `R_C_CS` 三段约定的
+（色标全局固定），表格上方仅**双柄时间条**；统计项下拉按「类型.通道」平铺（如
+`noc_left_util.Req`、`noc_left_util.Dat`），无需再单独选通道。时间条：**单击 = 选点**
+（显示该时刻切片）、**按住拖动或拖动手柄 = 选时间窗**（单元格切换为窗口内均值）、
+▶ 按钮沿时刻回放。纯 DOM 页面，**不依赖 plotly**。缺省自动收录行标符合 `R_C_CS` 三段约定的
 类型，显式指定不符合约定的类型会报错；`--max-points` 限制每类型采样点（模块数×窗口
 数，默认 300000），超限时**仅压缩时间轴**——count 类相邻窗口求和、其余取均值，
 模块/CS 完整保留。
 
 ```bash
 python examples/demo.py               # NoC 接入已并入 demo：生成 8 ring × 4 通道 × 25 CS
-                                      # 数据（R03_C02 通道 CS12~14 注入环段拥塞），
+                                      # 数据（R03_Rsp 通道 CS12~14 注入环段拥塞），
                                       # 所有产物（含 raw 契约示例 raw/）统一落在 run_demo/
 python -m profmw.report run_demo -o run_demo_report.html          # 波形观测器
 python -m profmw.report run_demo --ring -o run_demo_ring_report.html  # ring矩阵报告

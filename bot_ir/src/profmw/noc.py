@@ -1,8 +1,9 @@
 """NoC ring 数据接入：noc_raw 目录 -> ProfilingStore。
 
 层级约定（run meta 的 levels）：ring -> channel -> cs，行标 =
-{R}{ring:02d}_{C}{channel:02d}_{CS}{cs:02d}，零填充保证字典序 = 物理序，
-前缀过滤即层级聚合（"R00_" = 整条 ring，"R00_C01_" = 单通道）。
+{R}{ring:02d}_{通道}_{CS}{cs:02d}，通道 ∈ Req/Snp/Rsp/Dat，如 R03_Rsp_CS13。
+ring/CS 零填充保证字典序 = 物理序，前缀过滤即层级聚合
+（"R00_" = 整条 ring，"R00_Rsp_" = 单通道）。
 """
 
 from __future__ import annotations
@@ -15,14 +16,22 @@ import pandas as pd
 
 DEFAULT_LEVELS = [
     {"key": "R", "name": "ring", "width": 2},
-    {"key": "C", "name": "channel", "width": 2},
+    {"key": "Ch", "name": "channel", "values": ["Req", "Snp", "Rsp", "Dat"]},
     {"key": "CS", "name": "cs", "width": 2},
 ]
 
 
 def _label_pattern(levels) -> re.Pattern:
-    """由 levels 生成行标合法性的正则，如 R\\d{2}_C\\d{2}_CS\\d{2}。"""
-    tokens = [f"{lv['key']}\\d{{{lv['width']}}}" for lv in levels]
+    """由 levels 生成行标合法性的正则，如 R\\d{2}_(Req|Snp|Rsp|Dat)_CS\\d{2}。
+
+    层级可声明 values（枚举通道名）或 width（零填充数值）。
+    """
+    tokens = []
+    for lv in levels:
+        if "values" in lv:
+            tokens.append("(?:" + "|".join(map(re.escape, lv["values"])) + ")")
+        else:
+            tokens.append(f"{lv['key']}\\d{{{lv['width']}}}")
     return re.compile("^" + "_".join(tokens) + "$")
 
 

@@ -125,7 +125,7 @@ class TestExportReport:
 def _noc_store():
     df = pd.DataFrame(
         [[1.0, 2.0], [3.0, 4.0]],
-        index=["R00_C00_CS00", "R00_C00_CS01"],
+        index=["R00_Req_CS00", "R00_Req_CS01"],
         columns=[100.0, 200.0],
     )
     store = ProfilingStore(meta={"levels": [{"key": "R", "width": 2},
@@ -147,6 +147,8 @@ class TestExportRingReport:
         html = self._ring_html(_noc_store(), tmp_path)
         assert "n-track" in html and "n-h1" in html and "n-h2" in html  # 双柄时间条
         assert "回放" in html and "通道" in html
+        assert 'id="ch-sel"' not in html           # 通道不再单独下拉
+        assert "${o.type}.${o.channel}" in html    # 统计项按「类型.通道」平铺
         assert "新增波形框" not in html            # 非面板体系
         assert "plotly" not in html.lower()        # 纯 DOM，无 plotly 依赖
 
@@ -175,7 +177,7 @@ class TestExportRingReport:
         store = ProfilingStore()
         store.add_matrix("noc_util",
                          pd.DataFrame(np.arange(8 * 100, dtype=float).reshape(8, 100),
-                                      index=[f"R{i:02d}_C00_CS{i:02d}" for i in range(8)],
+                                      index=[f"R{i:02d}_Req_CS{i:02d}" for i in range(8)],
                                       columns=np.arange(100, dtype=float) * 10),
                          meta={"unit": "%"})
         html = self._ring_html(store, tmp_path, max_points=200)
@@ -190,7 +192,7 @@ class TestExportRingReport:
         store = ProfilingStore()
         store.add_matrix("noc_cnt",
                          pd.DataFrame(np.ones((4, 100)),
-                                      index=[f"R{i:02d}_C00_CS{i:02d}" for i in range(4)],
+                                      index=[f"R{i:02d}_Req_CS{i:02d}" for i in range(4)],
                                       columns=np.arange(100, dtype=float)),
                          meta={"unit": "count"})
         html = self._ring_html(store, tmp_path, max_points=200)  # 4×100=400 -> k=2
@@ -210,7 +212,7 @@ class TestExportRingReport:
         store = ProfilingStore()
         store.add_matrix("noc_big",
                          pd.DataFrame(np.zeros((600, 501)),
-                                      index=[f"R{i:03d}_C00_CS00" for i in range(600)],
+                                      index=[f"R{i:03d}_Req_CS00" for i in range(600)],
                                       columns=np.arange(501, dtype=float)),
                          meta={"unit": "%"})
         d = self._embedded_data(self._ring_html(store, tmp_path))["noc_big"]
