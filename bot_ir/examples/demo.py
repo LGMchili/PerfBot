@@ -1,10 +1,11 @@
 """profmw 演示：构建矩阵数据集 + NoC 接入 -> 保存 -> 读取 -> 窗口统计 -> HTML 报告。
 
 所有产物统一落进 run_demo/：中间件本体（meta.json + types/*.csv）与
-NoC raw 契约示例（raw/ 子目录，manifest + 指标矩阵 CSV）。
+NoC raw 契约示例（raw/ 子目录，manifest + 指标矩阵 CSV）；波形报告与
+ring矩阵报告分开生成（ring 报告为纯 DOM，无需 plotly）。
 
 用法:
-    python examples/demo.py          # 未装 plotly 时自动跳过报告生成
+    python examples/demo.py          # 未装 plotly 时跳过波形报告，ring 报告照常生成
 """
 
 import shutil
@@ -20,10 +21,11 @@ import pandas as pd
 from profmw import ProfilingStore
 from profmw.dummy import make_noc_raw_dir
 from profmw.noc import add_noc_raw
-from profmw.report import export_report
+from profmw.report import export_report, export_ring_report
 
 OUT = Path("run_demo")
 REPORT = Path("run_demo_report.html")
+RING_REPORT = Path("run_demo_ring_report.html")
 
 TIMES = np.arange(0.0, 5000.0, 100.0)  # 50 个打点时间，列标
 
@@ -106,16 +108,25 @@ def main():
                                  modules=["R03_C02_CS13"], agg="mean"), 1))
     print("  R01_ 整条 ring 失败计数总和 =",
           round(loaded.aggregate("noc_up_fail_count", module_prefix="R01_", agg="sum")))
+    print("  --- 分维聚合 magg/tagg ---")
+    print("  R01 ring 平均每窗口总失败数 (magg=sum, tagg=mean) =",
+          round(loaded.aggregate("noc_up_fail_count", module_prefix="R01_",
+                                 magg="sum", tagg="mean"), 1))
+    print("  R03_C02 通道逐窗口失败总数曲线 (magg=sum) 前5点 =",
+          list(loaded.aggregate("noc_up_fail_count", module_prefix="R03_C02_",
+                                magg="sum").iloc[:5].round(0)))
 
     print("\n== 6. 校验 ==")
     print(loaded.validate())
 
-    print("\n== 7. 生成 HTML 观测报告（波形/热力图/ring矩阵/统计表）==")
+    print("\n== 7. 生成 HTML 观测报告（波形报告 + ring矩阵报告，分开生成）==")
     try:
         out = export_report(loaded, REPORT)
-        print(f"  {out}（双击打开；NoC 类型切到\"ring矩阵\"视图体验）")
+        print(f"  波形报告: {out}（波形/热力图/统计表）")
     except ImportError:
-        print("  跳过：未安装 plotly。pip install plotly 后重跑即可生成报告")
+        print("  跳过波形报告：未安装 plotly。pip install plotly 后重跑即可生成")
+    ring = export_ring_report(loaded, RING_REPORT)
+    print(f"  ring矩阵报告: {ring}（纯 DOM，无需 plotly）")
 
 
 if __name__ == "__main__":

@@ -391,6 +391,73 @@ class TestAggregate:
             store.aggregate("nope")
 
 
+class TestAggregatePerAxis:
+    """magg（沿模块）/ tagg（沿时间）分维聚合：先模块后时间。"""
+
+    def test_magg_then_tagg_returns_scalar(self):
+        store = ProfilingStore()
+        store.add_matrix("t", make_small_matrix())  # CH0:1,2,3  CH1:10,20,30
+        # 逐窗口跨模块 sum = [11,22,33]，再沿时间 mean = 22
+        assert store.aggregate("t", magg="sum", tagg="mean") == 22.0
+
+    def test_order_matters_magg_first(self):
+        store = ProfilingStore()
+        store.add_matrix("t", make_small_matrix())
+        # 先模块 mean -> [5.5,11,16.5]，再时间 sum = 33（与 sum->mean 的 22 区分）
+        assert store.aggregate("t", magg="mean", tagg="sum") == 33.0
+
+    def test_magg_only_returns_time_series(self):
+        store = ProfilingStore()
+        store.add_matrix("t", make_small_matrix())
+        out = store.aggregate("t", magg="sum")     # 保留时间轴
+        assert isinstance(out, pd.Series)
+        assert list(out.index) == [100.0, 200.0, 300.0]
+        assert list(out.values) == [11.0, 22.0, 33.0]
+
+    def test_tagg_only_returns_module_series(self):
+        store = ProfilingStore()
+        store.add_matrix("t", make_small_matrix())
+        out = store.aggregate("t", tagg="mean")    # 保留模块轴
+        assert isinstance(out, pd.Series)
+        assert list(out.index) == ["CH0", "CH1"]
+        assert list(out.values) == [2.0, 20.0]
+
+    def test_magg_tagg_with_filters_and_skipna(self):
+        store = make_store_with_nan()  # CH0:1,2,3  CH1:NaN,20,30 @ 100/200/300
+        # t_range 取 [200,300]，先模块 max -> [max(2,20), max(3,30)] = [20,30]，再时间 sum
+        assert store.aggregate("t", t_range=(200.0, None), magg="max", tagg="sum") == 50.0
+        # 全范围含 NaN 时 skipna=False 沿两步传播
+        assert np.isnan(store.aggregate("t", magg="max", tagg="sum", skipna=False))
+
+    def test_count_per_axis(self):
+        store = make_store_with_nan()
+        out = store.aggregate("t", magg="count")   # 每窗口非 NaN 模块数
+        assert list(out.values) == [1.0, 2.0, 2.0]
+        out2 = store.aggregate("t", tagg="count")  # 每模块非 NaN 窗口数
+        assert list(out2.values) == [3, 2]
+
+    def test_agg_and_magg_mutually_exclusive(self):
+        store = ProfilingStore()
+        store.add_matrix("t", make_small_matrix())
+        with pytest.raises(ValueError, match="agg.*magg"):
+            store.aggregate("t", agg="sum", magg="sum")
+        with pytest.raises(ValueError, match="agg.*magg"):
+            store.aggregate("t", agg="sum", tagg="mean")
+
+    def test_unknown_axis_agg_rejected(self):
+        store = ProfilingStore()
+        store.add_matrix("t", make_small_matrix())
+        with pytest.raises(ValueError, match="magg"):
+            store.aggregate("t", magg="p50")
+        with pytest.raises(ValueError, match="tagg"):
+            store.aggregate("t", tagg="median")
+
+    def test_default_agg_still_pooled_sum(self):
+        store = ProfilingStore()
+        store.add_matrix("t", make_small_matrix())
+        assert store.aggregate("t") == 66.0  # 不带任何聚合参数 -> 原池化 sum 默认
+
+
 class TestWindowSeries:
     def test_full_series_without_filters(self):
         store = ProfilingStore()

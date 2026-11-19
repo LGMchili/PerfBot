@@ -19,6 +19,63 @@ from profmw.validation import validate_store
 _META_TYPES_KEY = "types"
 _TYPES_DIR = "types"
 
+_AGGS = ("sum", "mean", "var", "max", "min", "count")
+
+
+def _pooled(df: pd.DataFrame, how: str, skipna: bool) -> float:
+    """池化聚合：模块×窗口全部单元格展平后一次性聚合。"""
+    arr = df.to_numpy(dtype=float).ravel()
+    valid = arr[~np.isnan(arr)] if skipna else arr
+    if how == "sum":
+        return float(np.nansum(valid)) if skipna else float(valid.sum())
+    if how == "mean":
+        return float(np.nanmean(valid)) if skipna else float(valid.mean())
+    if how == "var":
+        return float(np.nanvar(valid, ddof=1)) if skipna else float(valid.var(ddof=1))
+    if how == "max":
+        return float(np.nanmax(valid)) if skipna else float(valid.max())
+    if how == "min":
+        return float(np.nanmin(valid)) if skipna else float(valid.min())
+    return int((~np.isnan(arr)).sum()) if skipna else int(arr.size)  # count
+
+
+def _axis_reduce(df: pd.DataFrame, how: str, dim: str, skipna: bool) -> pd.Series:
+    """沿一个维度压缩：dim="module" 压行(结果以时间为标签)，
+    dim="time" 压列(结果以模块为标签)。"""
+    axis = 0 if dim == "module" else 1
+    if how == "count":
+        if skipna:
+            return df.notna().sum(axis=axis)
+        n = df.shape[0] if dim == "module" else df.shape[1]
+        idx = df.columns if dim == "module" else df.index
+        return pd.Series(n, index=idx)
+    kw = {"skipna": skipna}
+    if how == "sum":
+        return df.sum(axis=axis, **kw)
+    if how == "mean":
+        return df.mean(axis=axis, **kw)
+    if how == "var":
+        return df.var(axis=axis, ddof=1, **kw)
+    if how == "max":
+        return df.max(axis=axis, **kw)
+    return df.min(axis=axis, **kw)
+
+
+def _series_reduce(s: pd.Series, how: str, skipna: bool) -> float:
+    """对一维 Series 聚合（分维路径的第二步）。skipna 显式透传，NaN 语义不依赖默认值。"""
+    if how == "count":
+        return int(s.notna().sum()) if skipna else int(len(s))
+    kw = {"skipna": skipna}
+    if how == "sum":
+        return float(s.sum(**kw))
+    if how == "mean":
+        return float(s.mean(**kw))
+    if how == "var":
+        return float(s.var(ddof=1, **kw))
+    if how == "max":
+        return float(s.max(**kw))
+    return float(s.min(**kw))
+
 
 def _hist_quantile(counts: np.ndarray, edges: np.ndarray, q: float) -> np.ndarray:
     """逐行从直方图计数计算分位数（桶内线性插值），零计数行为 NaN。"""
@@ -195,35 +252,44 @@ class ProfilingStore:
         modules: list[str] | None = None,
         module_prefix: str | None = None,
         t_range: tuple[float | None, float | None] | None = None,
-        agg: str = "sum",
+        agg: str | None = None,
         skipna: bool = True,
         interp: str | None = None,
-    ) -> float:
-        """对选中的 (模块×窗口) 单元格沿时间轴聚合，返回单个观测值。
+        magg: str | None = None,
+        tagg: str | None = None,
+    ) -> float | pd.Series:
+        """聚合观测值，两种口径（互斥使用）：
 
-        agg ∈ sum/mean/var/max/min/count。var 为样本方差(ddof=1)。
-        skipna=True 跳过 NaN；False 时 NaN 参与运算并传播
+        1. agg：对选中的 (模块×窗口) 单元格**池化**聚合 -> 单个 float。
+           agg ∈ sum/mean/var/max/min/count（缺省时等价 agg="sum"）。
+        2. magg / tagg：**分维**聚合——magg 沿模块轴、tagg 沿时间轴，
+           固定先模块后时间；某维省略(None)即保留该维。
+           两者都给 -> float；只给其一 -> pandas.Series（标签为保留维）。
+
+        示例：magg="sum", tagg="mean" = 逐窗口跨模块求和后对时间取平均；
+        magg="sum" = 逐窗口跨模块总和曲线（Σ 曲线）。
+        var 为样本方差(ddof=1)；skipna=True 跳过 NaN，False 时 NaN 传播
         （count 例外：skipna=False 时计入 NaN，即返回单元格总数）。
         """
-        if agg not in ("sum", "mean", "var", "max", "min", "count"):
+        if agg is None and magg is None and tagg is None:
+            agg = "sum"  # 不带参数时保持原池化默认
+        if agg is not None and (magg is not None or tagg is not None):
+            raise ValueError("agg（池化）不能与 magg/tagg 同时使用，二选一")
+        if agg is not None and agg not in _AGGS:
             raise ValueError(f"不支持的 agg: {agg!r}")
         df = self._select(ptype, modules, module_prefix, t_range, interp)
-        arr = df.to_numpy(dtype=float).ravel()
-        if skipna:
-            valid = arr[~np.isnan(arr)]
-        else:
-            valid = arr
-        if agg == "sum":
-            return float(np.nansum(valid)) if skipna else float(valid.sum())
-        if agg == "mean":
-            return float(np.nanmean(valid)) if skipna else float(valid.mean())
-        if agg == "var":
-            return float(np.nanvar(valid, ddof=1)) if skipna else float(valid.var(ddof=1))
-        if agg == "max":
-            return float(np.nanmax(valid)) if skipna else float(valid.max())
-        if agg == "min":
-            return float(np.nanmin(valid)) if skipna else float(valid.min())
-        return int((~np.isnan(arr)).sum()) if skipna else int(arr.size)  # count
+
+        if agg is not None:
+            return _pooled(df, agg, skipna)
+        for name, how in (("magg", magg), ("tagg", tagg)):
+            if how is not None and how not in _AGGS:
+                raise ValueError(f"不支持的 {name}: {how!r}")
+        if magg is not None:
+            series = _axis_reduce(df, magg, dim="module", skipna=skipna)
+            if tagg is None:
+                return series
+            return _series_reduce(series, tagg, skipna)
+        return _axis_reduce(df, tagg, dim="time", skipna=skipna)
 
     def _select(self, ptype, modules, module_prefix, t_range, interp) -> pd.DataFrame:
         """模块/前缀/时间范围过滤 + 可选边界插值，返回切片副本。"""

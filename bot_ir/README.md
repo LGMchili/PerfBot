@@ -77,6 +77,19 @@ store.aggregate("dram_bw", module_prefix="CORE",
                 t_range=(None, 5000.0), agg="var")                   # 前缀过滤+开端时间
 ```
 
+**分维聚合** `magg`/`tagg`（与 `agg` 互斥）：magg 沿模块轴、tagg 沿时间轴，
+固定先模块后时间；省略某维即保留该维（返回 Series）：
+
+```python
+# 逐窗口跨模块求和 -> 对时间取平均 -> 单值（如"平均每窗口 ring 总失败数"）
+store.aggregate("noc_up_fail_count", module_prefix="R01_",
+                magg="sum", tagg="mean")
+store.aggregate("noc_up_fail_count", module_prefix="R01_", magg="sum")
+# -> Series（标签=时间）：Σ 曲线的 API 形态
+store.aggregate("noc_left_util", tagg="mean")
+# -> Series（标签=模块）：每节点的窗口均值，统计表口径
+```
+
 - `agg` ∈ `sum / mean / var / max / min / count`；`var` 为样本方差（ddof=1）
 - `t_range=(t0, t1)`，任一端可为 `None`（开放区间）；只支持范围查询，不支持单点等值取值
 - 缺失值为 NaN，默认 `skipna=True`（`False` 时 NaN 参与运算并传播；count 例外，见 docstring）
@@ -125,16 +138,20 @@ store = ProfilingStore(meta={"benchmark": "...", "chip": "..."})
 add_noc_raw(store, "noc_raw/")        # 校验行标符合层级约定，levels 写入 run meta
 ```
 
-**ring矩阵视图**（观测器面板视图之一）：行 = ring、列 = CS、单元格 = 数值+按值染色
+**ring矩阵报告**（与波形观测器分开生成）：行 = ring、列 = CS、单元格 = 数值+按值染色
 （色标全局固定），表格上方仅**双柄时间条 + 通道下拉**。时间条：**单击 = 选点**（显示该
 时刻切片）、**按住拖动或拖动手柄 = 选时间窗**（单元格切换为窗口内均值）、▶ 按钮沿
-时刻回放。行标不符合 `R_C_CS` 三段约定的类型选中该视图时给出提示。
+时刻回放。纯 DOM 页面，**不依赖 plotly**。缺省自动收录行标符合 `R_C_CS` 三段约定的
+类型，显式指定不符合约定的类型会报错；`--max-points` 限制每类型采样点（模块数×窗口
+数，默认 300000），超限时**仅压缩时间轴**——count 类相邻窗口求和、其余取均值，
+模块/CS 完整保留。
 
 ```bash
 python examples/demo.py               # NoC 接入已并入 demo：生成 8 ring × 4 通道 × 25 CS
                                       # 数据（R03_C02 通道 CS12~14 注入环段拥塞），
                                       # 所有产物（含 raw 契约示例 raw/）统一落在 run_demo/
-python -m profmw.report run_demo -o run_demo_report.html
+python -m profmw.report run_demo -o run_demo_report.html          # 波形观测器
+python -m profmw.report run_demo --ring -o run_demo_ring_report.html  # ring矩阵报告
 ```
 
 ## 观测器（HTML）
@@ -142,10 +159,13 @@ python -m profmw.report run_demo -o run_demo_report.html
 人肉看 CSV / 静态 PNG 的替代：多面板交互观测器，离线单文件 HTML，
 双击即看、可分发（全部 JS 内联，无外部引用）。需要可选依赖
 `pip install plotly`（或 `pip install "profmw[viz]"`，不影响中间件本体）。
+ring矩阵是**独立报告**（`--ring`），无需 plotly，见上文 NoC 章节。
 
 ```bash
 python -m profmw.report run_dummy/ -o report.html      # 命令行
 # 可选: --types ddr_bw --prefix CH --top 10
+python -m profmw.report run_demo/ --ring -o ring.html  # ring矩阵报告（需 R_C_CS 行标）
+# 可选: --max-points（默认 300000，超限时仅压缩时间轴）
 ```
 
 ```python
@@ -199,10 +219,11 @@ python examples/demo.py          # 端到端演示：构建矩阵数据集 + NoC
 | `add_type_from_records(ptype, rec, window=, bucket_how=, meta=)` | 长表分桶转矩阵 |
 | `save(path, zip_pack=False)` / `load(path)` | CSV+meta.json 目录（或 zip）读写 |
 | `list_types()` / `get_matrix(ptype)` | 类型清单（含 meta）/ 矩阵副本 |
-| `aggregate(ptype, modules=, module_prefix=, t_range=, agg=, skipna=, interp=)` | 沿时间轴聚合观测值 |
+| `aggregate(ptype, modules=, module_prefix=, t_range=, agg=, magg=, tagg=, skipna=, interp=)` | 聚合观测值：agg=池化单值；magg/tagg=分维（Series 或单值） |
 | `window_series(...)` | 逐窗口切片（同参数） |
 | `validate(nan_ratio_warn=)` | 数据健康检查 |
-| `profmw.report.export_report(store, out, ...)` | HTML 观测报告（可选依赖 plotly） |
+| `profmw.report.export_report(store, out, ...)` | 波形/热力图/统计表 观测报告（可选依赖 plotly） |
+| `profmw.report.export_ring_report(store, out, ...)` | ring矩阵 独立报告（纯 DOM，无 plotly） |
 
 ## 设计约定
 

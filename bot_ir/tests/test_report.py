@@ -1,5 +1,6 @@
-"""export_report：多面板 HTML 观测器测试（时间轴联动 + 选框放大区间统计）。"""
+"""export_report / export_ring_report 观测器测试。"""
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -114,18 +115,107 @@ class TestExportReport:
         assert 'chartEl.style.height = ""' in app  # 重渲染前清除内联高度残留
 
     def test_ring_matrix_view(self, small_store, tmp_path):
-        # ring矩阵：无总览曲线图，仅时间条（选点/选窗口）+ 数据表 + 通道下拉
+        # ring矩阵 已从波形观测器分离为独立报告：波形页不再含该视图
         app = _app_js(_report_html(small_store, tmp_path))
-        assert "ring矩阵" in app                     # 视图选项
-        assert "p-noc" in app                      # 通道/时间条控制区
-        assert "parseNoc" in app                   # 行标三段解析（R_C_CS）
-        assert "nocUpdate" in app                  # 表格/统计渲染
-        assert "n-track" in app                    # 双柄时间条
-        assert "n-h1" in app and "n-h2" in app     # 左右两个手柄
-        assert "回放" in app                       # 播放按钮
-        assert "通道" in app                        # 通道下拉
-        assert "plotly_click" not in app            # 总览图已移除，时间选择走时间条
-        assert "总览" not in app                    # 不再渲染跨模块聚合曲线
+        assert '"ring"' not in app                # 视图选项移除
+        assert "ring矩阵" not in app               # 文案移除
+        assert "n-track" not in app                # ring 时间条移除
+
+
+def _noc_store():
+    df = pd.DataFrame(
+        [[1.0, 2.0], [3.0, 4.0]],
+        index=["R00_C00_CS00", "R00_C00_CS01"],
+        columns=[100.0, 200.0],
+    )
+    store = ProfilingStore(meta={"levels": [{"key": "R", "width": 2},
+                                            {"key": "C", "width": 2},
+                                            {"key": "CS", "width": 2}]})
+    store.add_matrix("noc_up_fail_count", df,
+                     meta={"module": "dummy", "unit": "count"})
+    return store
+
+
+class TestExportRingReport:
+    def _ring_html(self, store, tmp_path, **kw):
+        from profmw.report import export_ring_report
+        out = tmp_path / "ring.html"
+        export_ring_report(store, out, **kw)
+        return out.read_text(encoding="utf-8")
+
+    def test_ring_page_has_table_timebar_channel(self, tmp_path):
+        html = self._ring_html(_noc_store(), tmp_path)
+        assert "n-track" in html and "n-h1" in html and "n-h2" in html  # 双柄时间条
+        assert "回放" in html and "通道" in html
+        assert "新增波形框" not in html            # 非面板体系
+        assert "plotly" not in html.lower()        # 纯 DOM，无 plotly 依赖
+
+    def test_waveform_types_excluded_by_auto_selection(self, tmp_path):
+        store = _noc_store()
+        store.add_matrix("ddr_bw", pd.DataFrame([[1.0]], index=["CH0"],
+                                                columns=[1.0]))
+        html = self._ring_html(store, tmp_path)
+        assert '"noc_up_fail_count"' in html
+        assert '"ddr_bw"' not in html              # 非 R_C_CS 行标类型不进 ring 报告
+
+    def test_explicit_non_noc_type_rejected(self, tmp_path):
+        store = _noc_store()
+        store.add_matrix("ddr_bw", pd.DataFrame([[1.0]], index=["CH0"],
+                                                columns=[1.0]))
+        from profmw.report import export_ring_report
+        with pytest.raises(ValueError, match="行标"):
+            export_ring_report(store, tmp_path / "r.html", types=["ddr_bw"])
+
+    def _embedded_data(self, html):
+        import json
+        blob = html.split("const DATA = ", 1)[1]
+        return json.loads(blob.split("};", 1)[0] + "}")
+
+    def test_max_points_compresses_time_not_modules(self, tmp_path):
+        store = ProfilingStore()
+        store.add_matrix("noc_util",
+                         pd.DataFrame(np.arange(8 * 100, dtype=float).reshape(8, 100),
+                                      index=[f"R{i:02d}_C00_CS{i:02d}" for i in range(8)],
+                                      columns=np.arange(100, dtype=float) * 10),
+                         meta={"unit": "%"})
+        html = self._ring_html(store, tmp_path, max_points=200)
+        d = self._embedded_data(html)["noc_util"]
+        assert len(d["modules"]) == 8               # 模块不动
+        assert len(d["times"]) == 25                # 8×100=800 > 200 -> k=4 -> 100/4
+        assert d["downsample"] == 4
+        # mean 合并：首模块首 4 个值 (0,1,2,3) 的均值 = 1.5
+        assert abs(d["values"][0][0] - 1.5) < 1e-9
+
+    def test_max_points_count_unit_merges_by_sum(self, tmp_path):
+        store = ProfilingStore()
+        store.add_matrix("noc_cnt",
+                         pd.DataFrame(np.ones((4, 100)),
+                                      index=[f"R{i:02d}_C00_CS{i:02d}" for i in range(4)],
+                                      columns=np.arange(100, dtype=float)),
+                         meta={"unit": "count"})
+        html = self._ring_html(store, tmp_path, max_points=200)  # 4×100=400 -> k=2
+        d = self._embedded_data(html)["noc_cnt"]
+        assert d["downsample"] == 2
+        assert abs(d["values"][0][0] - 2.0) < 1e-9  # count -> 相邻窗口求和
+        assert d["dsh"] == "sum"
+
+    def test_no_downsample_when_under_limit(self, tmp_path):
+        html = self._ring_html(_noc_store(), tmp_path, max_points=10000)
+        d = self._embedded_data(html)["noc_up_fail_count"]
+        assert d["downsample"] is None
+        assert len(d["times"]) == 2
+
+    def test_default_max_points_is_300k(self, tmp_path):
+        # 不传 max_points 时默认上限 300000：600×501=300600 > 300000 -> k=2
+        store = ProfilingStore()
+        store.add_matrix("noc_big",
+                         pd.DataFrame(np.zeros((600, 501)),
+                                      index=[f"R{i:03d}_C00_CS00" for i in range(600)],
+                                      columns=np.arange(501, dtype=float)),
+                         meta={"unit": "%"})
+        d = self._embedded_data(self._ring_html(store, tmp_path))["noc_big"]
+        assert d["downsample"] == 2
+        assert len(d["times"]) == 251
 
     def test_fully_offline(self, small_store, tmp_path):
         html = _report_html(small_store, tmp_path)
@@ -159,3 +249,15 @@ class TestCli:
         html = out.read_text(encoding="utf-8")
         assert html.count('id="panels"') == 1
         assert '"dram_bw"' in html
+
+    def test_main_ring_report_with_max_points(self, tmp_path):
+        run = tmp_path / "run"
+        _noc_store().save(run)
+        from profmw.report import main
+        out = tmp_path / "ring.html"
+        rc = main([str(run), "--ring", "--max-points", "4", "-o", str(out)])
+        assert rc == 0
+        html = out.read_text(encoding="utf-8")
+        assert "n-track" in html                       # ring 专用页面
+        # 2 模块 × 2 窗口 = 4 点 = 上限，不压缩
+        assert '"downsample": null' in html
