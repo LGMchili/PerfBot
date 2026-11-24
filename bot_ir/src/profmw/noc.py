@@ -62,3 +62,7 @@ def add_noc_raw(store, raw_dir, levels: list | None = None) -> None:
     if names_file.exists():
         store.meta["noc_node_names"] = json.loads(
             names_file.read_text(encoding="utf-8"))
+    die_file = raw_dir / "ring_die.json"       # 可选：ring 所属 die
+    if die_file.exists():
+        store.meta["noc_ring_die"] = json.loads(
+            die_file.read_text(encoding="utf-8"))

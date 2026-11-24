@@ -114,6 +114,22 @@ class TestExportReport:
         assert "layout.height = 460" in app        # 波形/热力图固定高度
         assert 'chartEl.style.height = ""' in app  # 重渲染前清除内联高度残留
 
+    def test_default_panel_sum_curve(self, tmp_path):
+        # 首屏 SMMU.TotalBw 默认打开 Σ 求和曲线，其他面板默认关闭
+        store = ProfilingStore()
+        store.add_matrix("SMMU.TotalBw",
+                         pd.DataFrame([[1.0, 2.0]], index=["SMMU"],
+                                      columns=[0.0, 1.0]),
+                         meta={"module": "SMMU", "unit": "GB/s"})
+        store.add_matrix("dram_bw",
+                         pd.DataFrame([[1.0, 2.0]], index=["CH0"],
+                                      columns=[0.0, 1.0]),
+                         meta={"unit": "GB/s"})
+        app = _app_js(_report_html(store, tmp_path))
+        assert "sumOn = false" in app               # 新增面板默认关闭
+        assert "initType === DEFAULT_WAVE" in app   # 首屏默认打开
+        assert "sumCb.checked = sumOn" in app
+
     def test_ring_matrix_view(self, small_store, tmp_path):
         # ring矩阵 仍不在波形视图里；ring 观测以「新增拓扑框」提供
         html = _report_html(small_store, tmp_path)
@@ -140,8 +156,24 @@ class TestExportReport:
         assert "总时延" in app                          # 统计条按总和口径
         assert "viewsFor" in app                       # 仅时延类型多出堆叠视图
         assert '"nanmean"' in app                      # 下拉项（不带"多模块"前缀）
-        assert "LAT_MEAN_FOR" in app                   # 每个模块组一份 nanmean
+        assert "LAT_MEAN_FOR" in app                   # 每个 (模块,统计) 一份 nanmean
         assert "meta.label" in app                     # 统计项用短标签（AIC0…）
+        assert "p-latstat" in app and "lat_stat" in app  # 时延统计二级下拉
+        assert "SMMU.TotalBw" in app                   # 首屏优先类型
+
+    def test_latency_stat_dropdown_lists_rd_wr(self, tmp_path):
+        # 同一 AIC 的不同时延统计（RdLat/WrLat）作为独立二级选项
+        store = ProfilingStore()
+        df = pd.DataFrame([[20.0], [50.0]],
+                          index=["AIC→Ring", "Ring→HBMC"], columns=[0.0])
+        for stat in ("RdLat", "WrLat"):
+            store.add_matrix(f"lat_AIC0.{stat}", df,
+                             meta={"module": "AIC", "label": "AIC0",
+                                   "lat_stat": stat, "unit": "ns",
+                                   "kind": "latency_path"})
+        app = _app_js(_report_html(store, tmp_path))
+        assert "RdLat" in app and "WrLat" in app
+        assert "latStatOf" in app
 
     def test_waveform_panels_exclude_noc_types(self, tmp_path):
         # NoC（R_C_CS 行标）只由拓扑框展示，不再出现在波形框类型列表
@@ -172,18 +204,21 @@ class TestExportReport:
         # 拓扑框复用同一份 DATA：六指标四角/箭头 + 槽位 IP 名
         store = _noc_store()
         store.meta["noc_node_names"] = {"R00_CS00": "HBMC", "R00_CS01": "MATA"}
+        store.meta["noc_ring_die"] = {"R00": "die0", "R01": "die1"}
         html = _report_html(store, tmp_path)
         app = _app_js(html)
+        assert "die1" in app                            # ring->die 映射内嵌
         assert "RING_METRICS" in app and "RING_TYPES" in app
         assert "NODE_NAMES" in app and "HBMC" in app    # IP 名内嵌
         assert 'topoBtn.style.display = "none"' in app  # 无 NoC 数据时自动隐藏入口
-        assert "全选" in app                            # ring 全选框
+        assert "p-die" in app and "RING_DIE" in app      # 按 die 下拉筛选
         assert 'class="p-t0"' in app                    # 开始时间输入框
         assert 'class="p-t1"' in app                    # 结束时间输入框
         assert "nearestIdx" in app                      # 时间输入按采样点落位
         assert "p-zin" in app and "p-zreset" in app      # 缩放 / 还原
         head = html.split("<body>")[1].split("<script>")[0]
         assert "HBMC" not in head                       # 页头不糊 IP 名映射
+        assert "die1" not in head                       # 页头不糊 ring->die 映射
 
 
 def _noc_store():

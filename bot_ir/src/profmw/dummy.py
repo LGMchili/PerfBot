@@ -114,6 +114,7 @@ def make_dummy_store(
 # ---------------------------------------------------------------- NoC ring 生成
 
 NOC_RINGS = 8
+NOC_DIES = 2                       # 每个 die 4 条 ring（demo）
 NOC_CHANNELS = ("Req", "Snp", "Rsp", "Dat")
 NOC_CS = 25
 # CS 槽位连接的硬件 IP 名（dummy 轮转填充，真实数据由 raw 目录的
@@ -191,4 +192,9 @@ def make_noc_raw_dir(out_dir, anomaly: bool = True, seed: int = 0,
                   for r in range(NOC_RINGS) for s in range(NOC_CS)}
     (out / "node_names.json").write_text(
         json.dumps(node_names, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ring 所属 die（NOC_DIES=2 时 die0=R00~R03、die1=R04~R07）
+    ring_die = {f"R{r:02d}": f"die{r * NOC_DIES // NOC_RINGS}"
+                for r in range(NOC_RINGS)}
+    (out / "ring_die.json").write_text(
+        json.dumps(ring_die, ensure_ascii=False, indent=2), encoding="utf-8")
     return out

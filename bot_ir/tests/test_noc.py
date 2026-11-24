@@ -145,6 +145,28 @@ class TestMakeNocRawDir:
         store.save(run)
         assert ProfilingStore.load(run).meta["noc_node_names"] == names  # 往返保留
 
+    def test_ring_die_json_in_raw_dir(self, tmp_path):
+        # ring 所属 die：2 die × 4 ring，键为 ring 名
+        from profmw.dummy import make_noc_raw_dir
+        raw = make_noc_raw_dir(tmp_path)
+        f = raw / "ring_die.json"
+        assert f.exists()
+        dies = json.loads(f.read_text(encoding="utf-8"))
+        assert set(dies) == {f"R{r:02d}" for r in range(8)}
+        assert dies["R00"] == "die0" and dies["R04"] == "die1"
+        assert len(set(dies.values())) == 2
+
+    def test_add_noc_raw_loads_ring_die(self, tmp_path):
+        from profmw.dummy import make_noc_raw_dir
+        raw = make_noc_raw_dir(tmp_path)
+        store = ProfilingStore()
+        add_noc_raw(store, raw)
+        dies = store.meta["noc_ring_die"]
+        assert dies["R07"] == "die1"
+        run = tmp_path / "run"
+        store.save(run)
+        assert ProfilingStore.load(run).meta["noc_ring_die"] == dies  # 往返保留
+
     def test_anomaly_congested_segment_stands_out(self, tmp_path):
         from profmw.dummy import make_noc_raw_dir
         raw = make_noc_raw_dir(tmp_path, anomaly=True)

@@ -34,8 +34,8 @@ def build_matrix(rows: list[str], values: np.ndarray) -> pd.DataFrame:
 
 
 def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
-    """四组数据：DDR 带宽 / 96 通道 rx_req 深度 / 120 核 outstanding /
-    8 个 AIC 的分路径平均时延。"""
+    """五组数据：DDR 带宽 / 96 通道 rx_req 深度 / 120 核 outstanding /
+    SMMU 总带宽 / 8 个 AIC × (RdLat, WrLat) 的分路径平均时延。"""
     rng = np.random.default_rng(42)
     out = []
 
@@ -62,18 +62,29 @@ def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
                 {"module": "dummy", "unit": "count", "stat": "窗口内均值",
                  "description": "各核窗口内平均读 outstanding 数"}))
 
-    # 4. 时延分段统计：每个 AIC 一张矩阵，行=时延路径，列=时间窗口，
-    #    值=该路径在窗口内的平均时延（ns）。各路径相加 = 端到端平均时延。
+    # 4. SMMU 模块总带宽（观测器首屏默认类型的示例）
+    smmu = 200.0 + rng.normal(0.0, 12.0, len(TIMES))
+    out.append(("SMMU.TotalBw", build_matrix(["SMMU"], smmu[None, :]),
+                {"module": "SMMU", "unit": "GB/s", "stat": "窗口内均值",
+                 "description": "SMMU 总带宽"}))
+
+    # 5. 时延分段统计：每个 AIC × 每种统计（RdLat/WrLat）一张矩阵，
+    #    行=时延路径，列=时间窗口，值=该路径在窗口内的平均时延（ns）。
+    #    各路径相加 = 端到端平均时延。
     paths = ["AIC→Ring", "Ring→HBMC", "HBMC→Ring", "Ring→AIC"]
-    base = np.array([20.0, 50.0, 50.0, 20.0])      # 各路径基线（ns）
+    base = {"RdLat": np.array([20.0, 50.0, 50.0, 20.0]),
+            "WrLat": np.array([25.0, 60.0, 55.0, 25.0])}   # 各路径基线（ns）
     for k in range(8):
-        vals = base[:, None] + rng.normal(0.0, 2.5, size=(len(paths), len(TIMES)))
-        if k == 3:                                  # AIC03 的 Ring→HBMC 段抬升
-            vals[1, 20:30] += np.linspace(0.0, 60.0, 10)
-        out.append((f"lat_AIC{k:02d}", build_matrix(paths, vals),
-                    {"module": "AIC", "label": f"AIC{k}", "unit": "ns",
-                     "kind": "latency_path", "stat": "窗口内平均",
-                     "description": f"AIC{k} 各时延路径平均时延"}))
+        for stat, b in base.items():
+            vals = b[:, None] + rng.normal(0.0, 2.5,
+                                           size=(len(paths), len(TIMES)))
+            if k == 3 and stat == "RdLat":             # AIC3 RdLat 的 Ring→HBMC 抬升
+                vals[1, 20:30] += np.linspace(0.0, 60.0, 10)
+            out.append((f"lat_AIC{k}.{stat}", build_matrix(paths, vals),
+                        {"module": "AIC", "label": f"AIC{k}",
+                         "lat_stat": stat, "unit": "ns",
+                         "kind": "latency_path", "stat": "窗口内平均",
+                         "description": f"AIC{k} {stat} 各时延路径平均时延"}))
     return out
 
 

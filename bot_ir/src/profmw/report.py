@@ -55,6 +55,7 @@ th { background: #f5f7fa; position: sticky; top: 0; }
                color: #555; margin-bottom: 6px; }
 .ring-filter label { display: flex; align-items: center; gap: 2px; cursor: pointer; }
 .ring-filter input { margin: 0; }
+.ring-filter select { font-size: 12px; padding: 2px 4px; }
 .time-inputs { display: flex; align-items: center; gap: 6px; font-size: 12px;
                color: #555; margin-bottom: 6px; }
 .time-inputs input { width: 90px; font-size: 12px; padding: 2px 4px; }
@@ -105,14 +106,16 @@ _JS_APP = r"""
 const DATA = __DATA__;
 const TOPN = __TOPN__;
 const NODE_NAMES = __NODES__;   // 拓扑框用：CS 槽位 IP 名（如 R00_CS00 -> HBMC）
+const RING_DIE = __RING_DIE__;  // ring -> die（如 R00 -> die0），缺省全归 die0
 const ALL_TYPES = Object.keys(DATA).sort();
 // 模块分组：类型 meta 的 module 字段；缺省归"默认"组
 const moduleOf = ptype => (DATA[ptype].meta && DATA[ptype].meta.module) || "默认";
 const VIEWS = [["lines", "波形"], ["heatmap", "热力图"], ["stats", "统计表"]];
 // 时延路径类型：meta.kind = "latency_path"；波形框与时延框内容互不串选
 const isLatency = t => (((DATA[t] || {}).meta || {}).kind === "latency_path");
+const latStatOf = t => ((DATA[t] || {}).meta || {}).lat_stat || "";  // RdLat/WrLat
 const LAT_MEAN = "__lat_nanmean__";   // 时延框的 nanmean 虚拟类型前缀
-const LAT_MEAN_FOR = {};              // 模块组 -> 该组 nanmean 虚拟类型
+const LAT_MEAN_FOR = {};              // 模块组::统计 -> 该组 nanmean 虚拟类型
 // 视图也隔离：时延框只有绝对时延堆叠，波形框只有波形/热力图/统计表
 const viewsFor = type =>
   isLatency(type) ? [["stack", "时延堆叠"]] : VIEWS.slice();
@@ -209,13 +212,14 @@ function tableHTML(d) {
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-function addPanel(type, view) {
+function addPanel(type, view, sumOn = false) {
   const id = "p" + panelSeq++;
   const wrap = document.createElement("div");
   wrap.className = "panel";
   wrap.innerHTML =
     `<div class="panel-head">` +
     `<select class="p-mod" title="模块"></select>` +
+    `<select class="p-latstat" title="时延统计" style="display:none"></select>` +
     `<select class="p-stat" title="统计项"></select>` +
     `<select class="p-view"></select>` +
     `<label class="p-sum" title="显示当前可见模块的逐时间点求和曲线"><input type="checkbox"> Σ 求和曲线</label>` +
@@ -226,7 +230,7 @@ function addPanel(type, view) {
     `<div class="p-stats" id="${id}-stats"></div>`;
   document.getElementById("panels").appendChild(wrap);
 
-  const panel = { id, type, view, xrange: null, selrange: null, showSum: false,
+  const panel = { id, type, view, xrange: null, selrange: null, showSum: sumOn,
                   wired: false, el: wrap, latency: isLatency(type) };
   // 波形框/时延框互不串类型；NoC 类型只由拓扑框展示，不进波形框
   const kindOk = t => panel.latency
@@ -239,15 +243,30 @@ function addPanel(type, view) {
     modSel.appendChild(o);
   });
   const statSel = wrap.querySelector(".p-stat");
-  const fillStats = mod => {
-    statSel.innerHTML = "";
-    if (panel.latency && LAT_MEAN_FOR[mod]) {   // 当前模块组内的 nanmean（忽略 NaN）
+  const latStatSel = wrap.querySelector(".p-latstat");
+  if (panel.latency) latStatSel.style.display = "";
+  const fillLatStats = mod => {       // 时延框第二级：该模块组的时延统计（RdLat/WrLat）
+    if (!panel.latency) return;
+    latStatSel.innerHTML = "";
+    [...new Set(ALL_TYPES.filter(t => kindOk(t) && moduleOf(t) === mod)
+                           .map(latStatOf))].forEach(s => {
       const o = document.createElement("option");
-      o.value = LAT_MEAN_FOR[mod];
+      o.value = s;
+      o.textContent = s || "默认";
+      latStatSel.appendChild(o);
+    });
+  };
+  const fillStats = (mod, stat) => {
+    statSel.innerHTML = "";
+    const meanKey = LAT_MEAN_FOR[mod + "|" + stat];
+    if (panel.latency && meanKey) {   // 该统计下的 nanmean（忽略 NaN）
+      const o = document.createElement("option");
+      o.value = meanKey;
       o.textContent = "nanmean";
       statSel.appendChild(o);
     }
-    ALL_TYPES.filter(t => kindOk(t) && moduleOf(t) === mod).forEach(t => {
+    ALL_TYPES.filter(t => kindOk(t) && moduleOf(t) === mod &&
+                          (!panel.latency || latStatOf(t) === stat)).forEach(t => {
       const o = document.createElement("option");
       o.value = t;
       o.textContent = (DATA[t].meta && DATA[t].meta.label) || t;
@@ -256,7 +275,9 @@ function addPanel(type, view) {
   };
   const initMod = moduleOf(type);
   modSel.value = initMod;
-  fillStats(initMod);
+  fillLatStats(initMod);
+  if (panel.latency) latStatSel.value = latStatOf(type);
+  fillStats(initMod, latStatOf(type));
   statSel.value = type;
   const vsel = wrap.querySelector(".p-view");
   const fillViews = () => {          // 时延路径类型多一个「时延堆叠」视图
@@ -272,11 +293,19 @@ function addPanel(type, view) {
   };
   fillViews();
   panels.push(panel);
-  modSel.onchange = () => {           // 切模块：统计项列表跟随刷新
-    fillStats(modSel.value);
+  modSel.onchange = () => {           // 切模块：统计/核列表跟随刷新
+    fillLatStats(modSel.value);
+    const stat = panel.latency ? (latStatSel.options[0] || {}).value || "" : "";
+    fillStats(modSel.value, stat);
     statSel.value = statSel.options[0].value;
     panel.type = statSel.value; panel.xrange = null; panel.selrange = null;
     fillViews();
+    renderPanel(panel);
+  };
+  latStatSel.onchange = () => {
+    fillStats(modSel.value, latStatSel.value);
+    statSel.value = statSel.options[0].value;
+    panel.type = statSel.value; panel.xrange = null; panel.selrange = null;
     renderPanel(panel);
   };
   statSel.onchange = () => {
@@ -288,7 +317,9 @@ function addPanel(type, view) {
     panel.view = vsel.value; panel.xrange = null; panel.selrange = null;
     renderPanel(panel);
   };
-  wrap.querySelector(".p-sum input").onchange = e => {
+  const sumCb = wrap.querySelector(".p-sum input");
+  sumCb.checked = sumOn;              // 首屏 SMMU.TotalBw 默认打开求和曲线
+  sumCb.onchange = e => {
     panel.showSum = e.target.checked;
     renderPanel(panel);
   };
@@ -600,7 +631,8 @@ function addTopoPanel() {
   const parsed = parseNoc(DATA[timeType]);
   if (!parsed) return;
   const state = { channel: parsed.channels[0], i1: 0, i2: 0,
-                  timer: null, hidden: new Set() };
+                  timer: null, die: "die0" };
+  const dieOf = r => RING_DIE[r] || "die0";   // 未声明 die 的 ring 归 die0
   const wrap = document.createElement("div");
   wrap.className = "panel";
   wrap.innerHTML =
@@ -612,7 +644,8 @@ function addTopoPanel() {
     `<button class="p-zout">−</button><span class="p-zval">100%</span>` +
     `<button class="p-zin">＋</button><button class="p-zreset">还原</button></span>` +
     `<button class="p-close" title="移除面板">×</button></div>` +
-    `<div class="ring-filter p-rings"></div>` +
+    `<div class="ring-filter"><span>Die：</span>` +
+    `<select class="p-die" title="die"></select></div>` +
     `<div class="time-inputs">时间窗：` +
     `<input class="p-t0" type="number" step="any" title="开始时间">` +
     ` ～ <input class="p-t1" type="number" step="any" title="结束时间"></div>` +
@@ -627,7 +660,7 @@ function addTopoPanel() {
   const $ = sel => wrap.querySelector(sel);
   const topoHost = $(".p-topo");
   const topoInner = $(".p-topo-inner");
-  const ringsHost = $(".p-rings");
+  const dieSel = $(".p-die");
   const chSel = $(".p-ch");
   const track = $(".p-track");
   let refs = null, builtCh = null;
@@ -644,42 +677,18 @@ function addTopoPanel() {
   chSel.value = state.channel;
   chSel.onchange = () => { state.channel = chSel.value; refs = null; update(); };
 
-  let allCb = null;
-  function syncAll() {                     // 全选框：全显示=勾选，部分隐藏=半选
-    if (!allCb) return;
-    const n = state.hidden.size;
-    allCb.checked = n === 0;
-    allCb.indeterminate = n > 0 && n < parsed.rings.length;
-  }
-  function fillRings() {                   // 每条 ring 一个复选框，默认全选
-    ringsHost.innerHTML = "<span>Ring：</span>";
-    const allLabel = document.createElement("label");
-    allCb = document.createElement("input");
-    allCb.type = "checkbox";
-    allCb.onchange = () => {
-      if (allCb.checked) state.hidden.clear();
-      else parsed.rings.forEach(r => state.hidden.add(r));
-      refs = null;
-      fillRings(); update();               // 重建以同步单项勾选
-    };
-    allLabel.appendChild(allCb);
-    allLabel.appendChild(document.createTextNode("全选"));
-    ringsHost.appendChild(allLabel);
-    parsed.rings.forEach(r => {
-      const label = document.createElement("label");
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = !state.hidden.has(r);
-      cb.onchange = () => {
-        if (cb.checked) state.hidden.delete(r); else state.hidden.add(r);
-        syncAll();
-        refs = null; update();
-      };
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(r));
-      ringsHost.appendChild(label);
+  function fillDies() {                    // die 下拉：默认 die0
+    const dies = [...new Set(parsed.rings.map(dieOf))];
+    if (!dies.length) return;
+    state.die = dies.includes("die0") ? "die0" : dies[0];
+    dieSel.innerHTML = "";
+    dies.forEach(d => {
+      const o = document.createElement("option");
+      o.value = o.textContent = d;
+      dieSel.appendChild(o);
     });
-    syncAll();
+    dieSel.value = state.die;
+    dieSel.onchange = () => { state.die = dieSel.value; refs = null; update(); };
   }
 
   function buildTopo() {
@@ -697,7 +706,7 @@ function addTopoPanel() {
       `<div class="lnk ${tag}">` +
       `<div class="arr ${tag}-f"><span class="ag">▶</span><span class="av"></span></div>` +
       `<div class="arr ${tag}-b"><span class="ag">◀</span><span class="av"></span></div></div>`;
-    refs = parsed.rings.filter(r => !state.hidden.has(r)).map(r => {
+    refs = parsed.rings.filter(r => dieOf(r) === state.die).map(r => {
       let inner = `<div class="topo-name">${r}</div><div class="topo-strip">` +
         linkHTML("endl");
       csList.forEach((cs, i) => {
@@ -870,7 +879,7 @@ function addTopoPanel() {
   $(".p-zreset").onclick = () => setZoom(1);
   setZoom(1);
 
-  fillRings();
+  fillDies();
   update();
 }
 
@@ -883,28 +892,31 @@ const LATENCY_TYPES = ALL_TYPES.filter(isLatency);
 // 波形框只收普通类型：时延走时延框，NoC（R_C_CS 行标）走拓扑框
 const WAVE_TYPES = ALL_TYPES.filter(t =>
   !isLatency(t) && !ringShaped(DATA[t]));
-// nanmean：每个时延模块组（如 AIC）内逐元素取均值（忽略 NaN），行标沿用组内首个
+// nanmean：每个（模块组, 时延统计）内逐元素取均值（忽略 NaN），行标沿用组内首个
 let LAT_MEAN_DEFAULT = null;
 if (LATENCY_TYPES.length) {
   [...new Set(LATENCY_TYPES.map(moduleOf))].forEach(mod => {
-    const types = LATENCY_TYPES.filter(t => moduleOf(t) === mod);
-    const base = DATA[types[0]];
-    const key = LAT_MEAN + "::" + mod;
-    LAT_MEAN_FOR[mod] = key;
-    if (!LAT_MEAN_DEFAULT) LAT_MEAN_DEFAULT = key;
-    DATA[key] = {
-      meta: base.meta, times: base.times, modules: base.modules,
-      values: base.modules.map((m, mi) => base.times.map((t, ti) => {
-        let s = 0, n = 0;
-        types.forEach(tp => {
-          const d = DATA[tp], i = d.modules.indexOf(m);
-          if (i < 0 || ti >= d.times.length) return;
-          const v = d.values[i][ti];
-          if (v != null && isFinite(v)) { s += v; n++; }
-        });
-        return n ? s / n : NaN;
-      })),
-    };
+    const modTypes = LATENCY_TYPES.filter(t => moduleOf(t) === mod);
+    [...new Set(modTypes.map(latStatOf))].forEach(stat => {
+      const types = modTypes.filter(t => latStatOf(t) === stat);
+      const base = DATA[types[0]];
+      const key = LAT_MEAN + "|" + mod + "|" + stat;
+      LAT_MEAN_FOR[mod + "|" + stat] = key;
+      if (!LAT_MEAN_DEFAULT) LAT_MEAN_DEFAULT = key;
+      DATA[key] = {
+        meta: base.meta, times: base.times, modules: base.modules,
+        values: base.modules.map((m, mi) => base.times.map((t, ti) => {
+          let s = 0, n = 0;
+          types.forEach(tp => {
+            const d = DATA[tp], i = d.modules.indexOf(m);
+            if (i < 0 || ti >= d.times.length) return;
+            const v = d.values[i][ti];
+            if (v != null && isFinite(v)) { s += v; n++; }
+          });
+          return n ? s / n : NaN;
+        })),
+      };
+    });
   });
 }
 const latBtn = document.getElementById("add-latency-panel");
@@ -917,9 +929,14 @@ let waveSeq = 0;
 if (WAVE_TYPES.length)
   waveBtn.onclick = () => addPanel(WAVE_TYPES[waveSeq++ % WAVE_TYPES.length], "lines");
 else waveBtn.style.display = "none";
-// 初始面板：优先普通波形；只有时延数据时退回时延框（nanmean）
-const initType = WAVE_TYPES.length ? WAVE_TYPES[0] : LAT_MEAN_DEFAULT;
-if (initType) addPanel(initType, WAVE_TYPES.length ? "lines" : "stack");
+// 初始面板：优先 SMMU.TotalBw；无则取第一个普通类型；只有时延数据时退回时延框
+const DEFAULT_WAVE = "SMMU.TotalBw";
+const initType = WAVE_TYPES.length
+  ? (WAVE_TYPES.includes(DEFAULT_WAVE) ? DEFAULT_WAVE : WAVE_TYPES[0])
+  : LAT_MEAN_DEFAULT;
+if (initType)
+  addPanel(initType, WAVE_TYPES.length ? "lines" : "stack",
+           initType === DEFAULT_WAVE);   // 首屏 SMMU.TotalBw 默认显示 Σ 曲线
 """
 
 _JS_RING_APP = r"""
@@ -1366,13 +1383,16 @@ def export_report(
     meta_line = " · ".join(
         "levels=" + ">".join(lv["key"] for lv in v) if k == "levels" else f"{k}={v}"
         for k, v in store.meta.items()
-        if k != "noc_node_names"          # IP 名映射不糊在页头，专供拓扑框
+        if k not in ("noc_node_names", "noc_ring_die")   # 拓扑框专用映射不上页头
     ) or "（无 run meta）"  # levels 压缩为 R>C>CS，避免整段 JSON 糊在页头
     app_js = (_JS_APP
               .replace("__DATA__", json.dumps(data, ensure_ascii=False))
               .replace("__TOPN__", str(int(top_n)))
               .replace("__NODES__",
                        json.dumps(store.meta.get("noc_node_names") or {},
+                                  ensure_ascii=False))
+              .replace("__RING_DIE__",
+                       json.dumps(store.meta.get("noc_ring_die") or {},
                                   ensure_ascii=False)))
     html = "\n".join([
         "<!DOCTYPE html><html><head><meta charset='utf-8'>",
@@ -1477,7 +1497,7 @@ def export_ring_report(
     meta_line = " · ".join(
         "levels=" + ">".join(lv["key"] for lv in v) if k == "levels" else f"{k}={v}"
         for k, v in store.meta.items()
-        if k != "noc_node_names"          # IP 名映射不糊在页头，专供拓扑图
+        if k not in ("noc_node_names", "noc_ring_die")   # 拓扑专用映射不上页头
     ) or "（无 run meta）"
     app_js = (_JS_RING_APP
               .replace("__DATA__", json.dumps(data, ensure_ascii=False))

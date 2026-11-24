@@ -128,7 +128,9 @@ print(report)                   # 逐类型一行；report.ok 为整体判定
 物理序。**前缀过滤即层级聚合**：`module_prefix="R01_"` = 整条 ring，
 `"R01_Rsp_"` = 单通道。层级声明写入 run meta（`levels`，入库时自动）。
 
-**接入**：raw 目录 = `manifest.json`（各指标 unit/stat meta）+ 每指标一张矩阵 CSV：
+**接入**：raw 目录 = `manifest.json`（各指标 unit/stat meta）+ 每指标一张矩阵 CSV；
+可选 `node_names.json`（`R00_CS00` -> 硬件 IP 名）与 `ring_die.json`
+（`R00` -> `die0`，供拓扑框按 die 筛选）：
 
 ```python
 from profmw import ProfilingStore
@@ -143,10 +145,11 @@ add_noc_raw(store, "noc_raw/")        # 校验行标符合层级约定，levels 
 `左上 UpInFail｜右上 UpOutFail｜左下 DownInFail｜右下 DownOutFail`（数值+按各指标
 全局色标染色）；相邻方框之间与首尾两端各一组箭头：`→` = 左侧 CS 的 right_util、
 `←` = 右侧 CS 的 left_util，颜色=强度、悬停看数值；ring 首尾环绕。框内自带
-通道下拉、ring 勾选（含「全选」，默认全选，部分隐藏时显示半选）、**开始/结束
-时间输入框**（按最近采样点落位，起止反填自动纠正，与拖拽条双向同步）、
-拖拽时间条（选点/选窗口，窗口时显示均值）、回放，以及拓扑图的**缩放（−/＋）
-与「还原」**（0.5×~3×，还原回 100%）。
+通道下拉、**按 die 下拉筛选**（一个 die 多条 ring，默认仅显示 `die0`；映射来自
+raw 目录的 `ring_die.json`，缺省全部归 `die0`）、**开始/结束时间输入框**（按
+最近采样点落位，起止反填自动纠正，与拖拽条双向同步）、拖拽时间条（选点/选窗口，
+窗口时显示均值）、回放，以及拓扑图的**缩放（−/＋）与「还原」**（0.5×~3×，
+还原回 100%）。
 
 指标 = 4 个失败计数（`noc_UpInFail`/`noc_UpOutFail`/`noc_DownInFail`/`noc_DownOutFail`）
 + 2 个链路占用率（`noc_left_util`/`noc_right_util`）。缺省自动收录行标符合
@@ -168,22 +171,23 @@ python -m profmw.report run_demo --ring -o ring.html       # 可选的独立行�
 列 = 时间窗口，值 = 该路径在窗口内的**平均时延**（已按段内请求平均）。约定 meta：
 
 ```python
-store.add_matrix("lat_AIC00", df, meta={
-    "module": "AIC",              # 第一级下拉：模块（如 AIC）
-    "label": "AIC0",              # 第二级下拉的短名
+store.add_matrix("lat_AIC0.RdLat", df, meta={
+    "module": "AIC",              # 一级下拉：模块（如 AIC）
+    "lat_stat": "RdLat",          # 二级下拉：时延统计（RdLat/WrLat…）
+    "label": "AIC0",              # 三级下拉的短名
     "unit": "ns",
     "kind": "latency_path",       # 观测器据此识别并只给该类型「时延堆叠」视图
-    "stat": "窗口内平均", "description": "AIC0 各时延路径平均时延"})
+    "stat": "窗口内平均", "description": "AIC0 RdLat 各时延路径平均时延"})
 ```
 
-观测器顶部「＋ 新增时延框」添加面板，两级下拉：**先选模块（如 `AIC`），再选
-`AIC0`/`AIC1`/…/`nanmean`**，默认 `nanmean`——该模块组内全部类型逐元素取均值
-（忽略 NaN）。只有「时延堆叠」视图，各路径平均时延**绝对堆叠、不做归一化**，
-堆叠顶边 = 端到端平均时延（四条路径 20/50/50/20 ns 则顶边 = 140 ns）；时间轴
-与其它面板联动。**波形框与时延框内容隔离、互不可选**：波形框的模块/类型下拉
-不出现时延类型，时延框只列 `latency_path` 类型且只有时延堆叠视图。demo 生成
-8 个 AIC（`lat_AIC00`~`lat_AIC07`，短名 `AIC0`~`AIC7`）× 4 条路径，`AIC03`
-的 `Ring→HBMC` 在 20~30 号窗口抬升作为异常示例。
+观测器顶部「＋ 新增时延框」添加面板，三级下拉：**模块（`AIC`）→ 统计
+（`RdLat`/`WrLat`）→ `nanmean`/`AIC0`/`AIC1`/…**，默认 `nanmean`——该模块该
+统计下全部类型逐元素取均值（忽略 NaN）。只有「时延堆叠」视图，各路径平均时延
+**绝对堆叠、不做归一化**，堆叠顶边 = 端到端平均时延（四条路径 20/50/50/20 ns
+则顶边 = 140 ns）；时间轴与其它面板联动。**波形框与时延框内容隔离、互不可选**：
+波形框的模块/类型下拉不出现时延类型，时延框只列 `latency_path` 类型且只有
+时延堆叠视图。demo 生成 8 个 AIC × (`RdLat`, `WrLat`) × 4 条路径；`AIC3`
+RdLat 的 `Ring→HBMC` 在 20~30 号窗口抬升作为异常示例。
 
 ## 观测器（HTML）
 
@@ -193,8 +197,9 @@ store.add_matrix("lat_AIC00", df, meta={
 波形框、ring 拓扑框与 AIC 时延框在**同一页面**：NoC 数据存在时出现
 「＋ 新增拓扑框」，时延类型存在时出现「＋ 新增时延框」，否则按钮自动隐藏。
 三类内容互不串选：波形框不列 NoC（`R_C_CS` 行标）与时延类型，NoC 只由拓扑框
-展示、时延只由时延框展示。`--ring` 仍可生成纯 DOM、无需 plotly 的独立页面
-（拓扑图/矩阵表）。
+展示、时延只由时延框展示。首屏默认面板优先显示 `SMMU.TotalBw`（存在时），
+否则取第一个普通类型；首屏面板**默认打开 Σ 求和曲线**，其它面板默认关闭。
+`--ring` 仍可生成纯 DOM、无需 plotly 的独立页面（拓扑图/矩阵表）。
 
 ```bash
 python -m profmw.report run_dummy/ -o report.html      # 命令行
