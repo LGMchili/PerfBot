@@ -82,9 +82,9 @@ store.aggregate("dram_bw", module_prefix="CORE",
 
 ```python
 # 逐窗口跨模块求和 -> 对时间取平均 -> 单值（如"平均每窗口 ring 总失败数"）
-store.aggregate("noc_up_fail_count", module_prefix="R01_",
+store.aggregate("noc_UpOutFail", module_prefix="R01_",
                 magg="sum", tagg="mean")
-store.aggregate("noc_up_fail_count", module_prefix="R01_", magg="sum")
+store.aggregate("noc_UpOutFail", module_prefix="R01_", magg="sum")
 # -> Series（标签=时间）：Σ 曲线的 API 形态
 store.aggregate("noc_left_util", tagg="mean")
 # -> Series（标签=模块）：每节点的窗口均值，统计表口径
@@ -138,34 +138,68 @@ store = ProfilingStore(meta={"benchmark": "...", "chip": "..."})
 add_noc_raw(store, "noc_raw/")        # 校验行标符合层级约定，levels 写入 run meta
 ```
 
-**ring矩阵报告**（与波形观测器分开生成）：行 = ring、列 = CS、单元格 = 数值+按值染色
-（色标全局固定），表格上方仅**双柄时间条**；统计项下拉按「类型.通道」平铺（如
-`noc_left_util.Req`、`noc_left_util.Dat`），无需再单独选通道。时间条：**单击 = 选点**
-（显示该时刻切片）、**按住拖动或拖动手柄 = 选时间窗**（单元格切换为窗口内均值）、
-▶ 按钮沿时刻回放。纯 DOM 页面，**不依赖 plotly**。缺省自动收录行标符合 `R_C_CS` 三段约定的
-类型，显式指定不符合约定的类型会报错；`--max-points` 限制每类型采样点（模块数×窗口
-数，默认 300000），超限时**仅压缩时间轴**——count 类相邻窗口求和、其余取均值，
-模块/CS 完整保留。
+**ring 拓扑框**（并入主观测器，见下节「观测器」）：页面顶部「＋ 新增拓扑框」
+可随时添加一个 ring 流量窗口——每条 ring 一条横向 CS 方框带，方框四角 =
+`左上 UpInFail｜右上 UpOutFail｜左下 DownInFail｜右下 DownOutFail`（数值+按各指标
+全局色标染色）；相邻方框之间与首尾两端各一组箭头：`→` = 左侧 CS 的 right_util、
+`←` = 右侧 CS 的 left_util，颜色=强度、悬停看数值；ring 首尾环绕。框内自带
+通道下拉、ring 勾选（含「全选」，默认全选，部分隐藏时显示半选）、**开始/结束
+时间输入框**（按最近采样点落位，起止反填自动纠正，与拖拽条双向同步）、
+拖拽时间条（选点/选窗口，窗口时显示均值）、回放，以及拓扑图的**缩放（−/＋）
+与「还原」**（0.5×~3×，还原回 100%）。
+
+指标 = 4 个失败计数（`noc_UpInFail`/`noc_UpOutFail`/`noc_DownInFail`/`noc_DownOutFail`）
++ 2 个链路占用率（`noc_left_util`/`noc_right_util`）。缺省自动收录行标符合
+`R_C_CS` 三段约定的类型，显式指定不符合约定的类型会报错；`--max-points` 限制每类型
+采样点（模块数×窗口数，默认 300000），超限时**仅压缩时间轴**——count 类相邻窗口
+求和、其余取均值，模块/CS 完整保留（用于 `--ring` 独立报告）。
 
 ```bash
 python examples/demo.py               # NoC 接入已并入 demo：生成 8 ring × 4 通道 × 25 CS
                                       # 数据（R03_Rsp 通道 CS12~14 注入环段拥塞），
                                       # 所有产物（含 raw 契约示例 raw/）统一落在 run_demo/
-python -m profmw.report run_demo -o run_demo_report.html          # 波形观测器
-python -m profmw.report run_demo --ring -o run_demo_ring_report.html  # ring矩阵报告
+python -m profmw.report run_demo -o run_demo_report.html   # 观测器（波形/拓扑/时延框）
+python -m profmw.report run_demo --ring -o ring.html       # 可选的独立行列式报告
 ```
+
+## 时延分段统计（AIC 路径）
+
+每个 AIC 一份「时延路径」矩阵：行 = 路径（如 `AIC→Ring`、`Ring→HBMC`），
+列 = 时间窗口，值 = 该路径在窗口内的**平均时延**（已按段内请求平均）。约定 meta：
+
+```python
+store.add_matrix("lat_AIC00", df, meta={
+    "module": "AIC",              # 第一级下拉：模块（如 AIC）
+    "label": "AIC0",              # 第二级下拉的短名
+    "unit": "ns",
+    "kind": "latency_path",       # 观测器据此识别并只给该类型「时延堆叠」视图
+    "stat": "窗口内平均", "description": "AIC0 各时延路径平均时延"})
+```
+
+观测器顶部「＋ 新增时延框」添加面板，两级下拉：**先选模块（如 `AIC`），再选
+`AIC0`/`AIC1`/…/`nanmean`**，默认 `nanmean`——该模块组内全部类型逐元素取均值
+（忽略 NaN）。只有「时延堆叠」视图，各路径平均时延**绝对堆叠、不做归一化**，
+堆叠顶边 = 端到端平均时延（四条路径 20/50/50/20 ns 则顶边 = 140 ns）；时间轴
+与其它面板联动。**波形框与时延框内容隔离、互不可选**：波形框的模块/类型下拉
+不出现时延类型，时延框只列 `latency_path` 类型且只有时延堆叠视图。demo 生成
+8 个 AIC（`lat_AIC00`~`lat_AIC07`，短名 `AIC0`~`AIC7`）× 4 条路径，`AIC03`
+的 `Ring→HBMC` 在 20~30 号窗口抬升作为异常示例。
 
 ## 观测器（HTML）
 
 人肉看 CSV / 静态 PNG 的替代：多面板交互观测器，离线单文件 HTML，
 双击即看、可分发（全部 JS 内联，无外部引用）。需要可选依赖
 `pip install plotly`（或 `pip install "profmw[viz]"`，不影响中间件本体）。
-ring矩阵是**独立报告**（`--ring`），无需 plotly，见上文 NoC 章节。
+波形框、ring 拓扑框与 AIC 时延框在**同一页面**：NoC 数据存在时出现
+「＋ 新增拓扑框」，时延类型存在时出现「＋ 新增时延框」，否则按钮自动隐藏。
+三类内容互不串选：波形框不列 NoC（`R_C_CS` 行标）与时延类型，NoC 只由拓扑框
+展示、时延只由时延框展示。`--ring` 仍可生成纯 DOM、无需 plotly 的独立页面
+（拓扑图/矩阵表）。
 
 ```bash
 python -m profmw.report run_dummy/ -o report.html      # 命令行
 # 可选: --types ddr_bw --prefix CH --top 10
-python -m profmw.report run_demo/ --ring -o ring.html  # ring矩阵报告（需 R_C_CS 行标）
+python -m profmw.report run_demo/ --ring -o ring.html  # 可选：独立 ring 页面
 # 可选: --max-points（默认 300000，超限时仅压缩时间轴）
 ```
 
@@ -223,8 +257,8 @@ python examples/demo.py          # 端到端演示：构建矩阵数据集 + NoC
 | `aggregate(ptype, modules=, module_prefix=, t_range=, agg=, magg=, tagg=, skipna=, interp=)` | 聚合观测值：agg=池化单值；magg/tagg=分维（Series 或单值） |
 | `window_series(...)` | 逐窗口切片（同参数） |
 | `validate(nan_ratio_warn=)` | 数据健康检查 |
-| `profmw.report.export_report(store, out, ...)` | 波形/热力图/统计表 观测报告（可选依赖 plotly） |
-| `profmw.report.export_ring_report(store, out, ...)` | ring矩阵 独立报告（纯 DOM，无 plotly） |
+| `profmw.report.export_report(store, out, ...)` | 观测报告：波形/热力图/统计表 + 可新增 ring 拓扑框 / AIC 时延框（可选依赖 plotly） |
+| `profmw.report.export_ring_report(store, out, ...)` | 独立 ring 页面：拓扑图/矩阵表（纯 DOM，无 plotly） |
 
 ## 设计约定
 

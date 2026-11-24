@@ -116,14 +116,24 @@ def make_dummy_store(
 NOC_RINGS = 8
 NOC_CHANNELS = ("Req", "Snp", "Rsp", "Dat")
 NOC_CS = 25
+# CS 槽位连接的硬件 IP 名（dummy 轮转填充，真实数据由 raw 目录的
+# node_names.json 提供）
+NOC_IP_NAMES = ("HBMC", "MATA", "SMMU", "CPU", "NPU", "DMA", "PCIE",
+                "DSP", "VENC", "NETC", "CRYPT", "DBG")
 
 _NOC_META = {
-    "noc_up_fail_count": {"module": "dummy", "unit": "count",
-                          "stat": "窗口内失败次数",
-                          "description": "各节点上 ring 失败计数"},
-    "noc_down_fail_count": {"module": "dummy", "unit": "count",
-                            "stat": "窗口内失败次数",
-                            "description": "各节点下 ring 失败计数"},
+    "noc_UpInFail": {"module": "dummy", "unit": "count",
+                     "stat": "窗口内失败次数",
+                     "description": "各节点上 ring 入方向失败计数"},
+    "noc_UpOutFail": {"module": "dummy", "unit": "count",
+                      "stat": "窗口内失败次数",
+                      "description": "各节点上 ring 出方向失败计数"},
+    "noc_DownInFail": {"module": "dummy", "unit": "count",
+                       "stat": "窗口内失败次数",
+                       "description": "各节点下 ring 入方向失败计数"},
+    "noc_DownOutFail": {"module": "dummy", "unit": "count",
+                        "stat": "窗口内失败次数",
+                        "description": "各节点下 ring 出方向失败计数"},
     "noc_left_util": {"module": "dummy", "unit": "%",
                       "stat": "窗口内平均占用率",
                       "description": "环左方向链路占用率"},
@@ -137,8 +147,10 @@ def make_noc_raw_dir(out_dir, anomaly: bool = True, seed: int = 0,
                      n_windows: int = N_WINDOWS) -> Path:
     """生成 noc_raw 目录（manifest.json + 每指标一张矩阵 CSV）。
 
-    布局：8 ring × 4 通道（Req/Snp/Rsp/Dat）× 25 CS = 800 行/指标。anomaly=True
-    时在 R03_Rsp 通道的 CS12~CS14 注入环段拥塞（失败计数高、左右占用率近饱和）。
+    布局：8 ring × 4 通道（Req/Snp/Rsp/Dat）× 25 CS = 800 行/指标。
+    指标 = 4 个失败计数（Up/Down × In/Out）+ 2 个链路占用率。
+    anomaly=True 时在 R03_Rsp 通道的 CS12~CS14 注入环段拥塞
+    （失败计数高、左右占用率近饱和）。
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -150,16 +162,20 @@ def make_noc_raw_dir(out_dir, anomaly: bool = True, seed: int = 0,
                for s in range(NOC_CS)]
     n = len(modules)
     mats = {
-        "noc_up_fail_count": rng.integers(0, 4, (n, n_windows)).astype(float),
-        "noc_down_fail_count": rng.integers(0, 4, (n, n_windows)).astype(float),
+        "noc_UpInFail": rng.integers(0, 4, (n, n_windows)).astype(float),
+        "noc_UpOutFail": rng.integers(0, 4, (n, n_windows)).astype(float),
+        "noc_DownInFail": rng.integers(0, 4, (n, n_windows)).astype(float),
+        "noc_DownOutFail": rng.integers(0, 4, (n, n_windows)).astype(float),
         "noc_left_util": rng.uniform(20.0, 60.0, (n, n_windows)),
         "noc_right_util": rng.uniform(20.0, 60.0, (n, n_windows)),
     }
     if anomaly:
         for i, m in enumerate(modules):
             if m.startswith("R03_Rsp_CS") and int(m[-2:]) in (12, 13, 14):
-                mats["noc_up_fail_count"][i] = rng.integers(80, 121, n_windows)
-                mats["noc_down_fail_count"][i] = rng.integers(60, 101, n_windows)
+                for k in ("noc_UpInFail", "noc_UpOutFail"):
+                    mats[k][i] = rng.integers(80, 121, n_windows)
+                for k in ("noc_DownInFail", "noc_DownOutFail"):
+                    mats[k][i] = rng.integers(60, 101, n_windows)
                 mats["noc_left_util"][i] = rng.uniform(88.0, 99.0, n_windows)
                 mats["noc_right_util"][i] = rng.uniform(88.0, 99.0, n_windows)
     manifest = {}
@@ -169,4 +185,10 @@ def make_noc_raw_dir(out_dir, anomaly: bool = True, seed: int = 0,
         manifest[ptype] = dict(_NOC_META[ptype])
     (out / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    # CS 槽位的硬件 IP 名（按 ring+CS 定位，与通道无关的物理属性）
+    node_names = {f"R{r:02d}_CS{s:02d}":
+                  NOC_IP_NAMES[(r * 5 + s) % len(NOC_IP_NAMES)]
+                  for r in range(NOC_RINGS) for s in range(NOC_CS)}
+    (out / "node_names.json").write_text(
+        json.dumps(node_names, ensure_ascii=False, indent=2), encoding="utf-8")
     return out

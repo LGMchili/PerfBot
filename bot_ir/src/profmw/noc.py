@@ -58,3 +58,7 @@ def add_noc_raw(store, raw_dir, levels: list | None = None) -> None:
                 f"{ptype!r} 的行标不符合层级约定 {levels}，如: {bad[:3]}")
         store.add_matrix(ptype, df, meta=meta)
     store.meta.setdefault("levels", levels)
+    names_file = raw_dir / "node_names.json"   # 可选：CS 槽位的硬件 IP 名
+    if names_file.exists():
+        store.meta["noc_node_names"] = json.loads(
+            names_file.read_text(encoding="utf-8"))

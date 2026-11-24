@@ -96,7 +96,8 @@ class TestAddNocRaw:
 
 # ---------------------------------------------------------------- dummy NoC 生成
 
-NOC_TYPES = ["noc_up_fail_count", "noc_down_fail_count",
+# 4 个失败计数（In/Out × Up/Down）+ 2 个链路占用率
+NOC_TYPES = ["noc_UpInFail", "noc_UpOutFail", "noc_DownInFail", "noc_DownOutFail",
              "noc_left_util", "noc_right_util"]
 
 
@@ -107,7 +108,7 @@ class TestMakeNocRawDir:
         assert (raw / "manifest.json").exists()
         for ptype in NOC_TYPES:
             assert (raw / f"{ptype}.csv").exists()
-        df = pd.read_csv(raw / "noc_up_fail_count.csv", index_col=0)
+        df = pd.read_csv(raw / "noc_UpOutFail.csv", index_col=0)
         assert df.shape[0] == 8 * 4 * 25
         assert df.index[0] == "R00_Req_CS00"
         assert df.index[-1] == "R07_Dat_CS24"
@@ -118,25 +119,49 @@ class TestMakeNocRawDir:
         raw = make_noc_raw_dir(tmp_path)
         manifest = json.loads((raw / "manifest.json").read_text(encoding="utf-8"))
         assert set(manifest) == set(NOC_TYPES)
-        assert manifest["noc_up_fail_count"]["unit"] == "count"
+        assert manifest["noc_UpOutFail"]["unit"] == "count"
         assert manifest["noc_left_util"]["unit"] == "%"
-        assert manifest["noc_up_fail_count"]["module"] == "dummy"  # 模块分组字段
+        assert manifest["noc_UpInFail"]["module"] == "dummy"  # 模块分组字段
+
+    def test_node_names_json_in_raw_dir(self, tmp_path):
+        # CS 槽位的硬件 IP 名（HBMC/MATA/SMMU...），按 ring+CS 定位
+        from profmw.dummy import make_noc_raw_dir
+        raw = make_noc_raw_dir(tmp_path)
+        f = raw / "node_names.json"
+        assert f.exists()
+        names = json.loads(f.read_text(encoding="utf-8"))
+        assert len(names) == 8 * 25
+        assert "R00_CS00" in names and "R07_CS24" in names   # 键不带通道
+        assert {"HBMC", "MATA", "SMMU"} <= set(names.values())
+
+    def test_add_noc_raw_loads_node_names(self, tmp_path):
+        from profmw.dummy import make_noc_raw_dir
+        raw = make_noc_raw_dir(tmp_path)
+        store = ProfilingStore()
+        add_noc_raw(store, raw)
+        names = store.meta["noc_node_names"]
+        assert names["R03_CS13"]                     # 拥塞注入点也有 IP 名
+        run = tmp_path / "run"
+        store.save(run)
+        assert ProfilingStore.load(run).meta["noc_node_names"] == names  # 往返保留
 
     def test_anomaly_congested_segment_stands_out(self, tmp_path):
         from profmw.dummy import make_noc_raw_dir
         raw = make_noc_raw_dir(tmp_path, anomaly=True)
-        df = pd.read_csv(raw / "noc_up_fail_count.csv", index_col=0)
+        df = pd.read_csv(raw / "noc_UpOutFail.csv", index_col=0)
         row_means = df.mean(axis=1)
         hot = row_means["R03_Rsp_CS13"]      # 注入拥塞的环段中点
         median = row_means.median()
         assert hot > 10 * median
+        down_in = pd.read_csv(raw / "noc_DownInFail.csv", index_col=0)
+        assert down_in.mean(axis=1)["R03_Rsp_CS13"] > 10 * down_in.mean(axis=1).median()
         util = pd.read_csv(raw / "noc_left_util.csv", index_col=0)
         assert util.mean(axis=1)["R03_Rsp_CS13"] > 80
 
     def test_healthy_without_anomaly(self, tmp_path):
         from profmw.dummy import make_noc_raw_dir
         raw = make_noc_raw_dir(tmp_path, anomaly=False)
-        df = pd.read_csv(raw / "noc_up_fail_count.csv", index_col=0)
+        df = pd.read_csv(raw / "noc_UpOutFail.csv", index_col=0)
         row_means = df.mean(axis=1)
         assert row_means.max() < 10 * row_means.median() + 1
 

@@ -91,7 +91,7 @@ class TestExportReport:
     def test_any_panel_removable_but_keep_one(self, small_store, tmp_path):
         # 面板删除：数量 >= 2 时每个面板（含第一个）都有 ×；只剩一个时隐藏 ×
         app = _app_js(_report_html(small_store, tmp_path))
-        assert "panels.length > 1" in app       # 按数量而非下标控制删除入口
+        assert "panels.length + topoPanels.length > 1" in app  # 波形框+拓扑框统一计数
         assert 'i ? "" : "none"' not in app     # 不再按下标永久保留第一个面板
 
     def test_ranking_view_removed(self, small_store, tmp_path):
@@ -115,11 +115,75 @@ class TestExportReport:
         assert 'chartEl.style.height = ""' in app  # 重渲染前清除内联高度残留
 
     def test_ring_matrix_view(self, small_store, tmp_path):
-        # ring矩阵 已从波形观测器分离为独立报告：波形页不再含该视图
-        app = _app_js(_report_html(small_store, tmp_path))
-        assert '"ring"' not in app                # 视图选项移除
-        assert "ring矩阵" not in app               # 文案移除
-        assert "n-track" not in app                # ring 时间条移除
+        # ring矩阵 仍不在波形视图里；ring 观测以「新增拓扑框」提供
+        html = _report_html(small_store, tmp_path)
+        app = _app_js(html)
+        assert '"ring"' not in app                # 视图选项未新增 ring
+        assert "ring矩阵" not in app               # 矩阵表仅在独立 --ring 报告中
+        assert "新增拓扑框" in html                 # 波形页的 ring 观测入口
+        assert "addTopoPanel" in app
+
+    def test_latency_panel_stacks_absolute_latency(self, tmp_path):
+        # 时延框：各路径平均时延绝对堆叠（不归一化），顶边=端到端平均时延
+        store = ProfilingStore()
+        df = pd.DataFrame([[20.0, 21.0], [50.0, 55.0]],
+                          index=["AIC→Ring", "Ring→HBMC"], columns=[0.0, 100.0])
+        store.add_matrix("lat_AIC00", df,
+                         meta={"module": "latency", "unit": "ns",
+                               "kind": "latency_path"})
+        html = _report_html(store, tmp_path)
+        app = _app_js(html)
+        assert "新增时延框" in html                    # 入口
+        assert "LATENCY_TYPES" in app and "latency_path" in app
+        assert "stackgroup" in app                     # 绝对时延堆叠
+        assert "groupnorm" not in app                  # 不做占比归一化
+        assert "总时延" in app                          # 统计条按总和口径
+        assert "viewsFor" in app                       # 仅时延类型多出堆叠视图
+        assert '"nanmean"' in app                      # 下拉项（不带"多模块"前缀）
+        assert "LAT_MEAN_FOR" in app                   # 每个模块组一份 nanmean
+        assert "meta.label" in app                     # 统计项用短标签（AIC0…）
+
+    def test_waveform_panels_exclude_noc_types(self, tmp_path):
+        # NoC（R_C_CS 行标）只由拓扑框展示，不再出现在波形框类型列表
+        store = _noc_store()
+        store.add_matrix("dram_bw",
+                         pd.DataFrame([[1.0]], index=["CH0"], columns=[0.0]),
+                         meta={"unit": "GB/s"})
+        app = _app_js(_report_html(store, tmp_path))
+        assert "!isLatency(t) && !ringShaped(DATA[t])" in app  # 波形框过滤
+        assert "!ringShaped(DATA[t])" in app
+
+    def test_wave_and_latency_panels_isolated(self, tmp_path):
+        # 波形框只列普通类型，时延框只列 latency_path 类型，互不可选
+        store = ProfilingStore()
+        store.add_matrix("dram_bw",
+                         pd.DataFrame([[1.0]], index=["CH0"], columns=[0.0]),
+                         meta={"unit": "GB/s"})
+        store.add_matrix("lat_AIC00",
+                         pd.DataFrame([[20.0]], index=["AIC→Ring"], columns=[0.0]),
+                         meta={"module": "latency", "unit": "ns",
+                               "kind": "latency_path"})
+        app = _app_js(_report_html(store, tmp_path))
+        assert "isLatency" in app
+        assert "WAVE_TYPES = ALL_TYPES.filter" in app
+        assert "kindOk = t => panel.latency" in app
+
+    def test_topo_panel_embeds_ring_data_and_ip_names(self, tmp_path):
+        # 拓扑框复用同一份 DATA：六指标四角/箭头 + 槽位 IP 名
+        store = _noc_store()
+        store.meta["noc_node_names"] = {"R00_CS00": "HBMC", "R00_CS01": "MATA"}
+        html = _report_html(store, tmp_path)
+        app = _app_js(html)
+        assert "RING_METRICS" in app and "RING_TYPES" in app
+        assert "NODE_NAMES" in app and "HBMC" in app    # IP 名内嵌
+        assert 'topoBtn.style.display = "none"' in app  # 无 NoC 数据时自动隐藏入口
+        assert "全选" in app                            # ring 全选框
+        assert 'class="p-t0"' in app                    # 开始时间输入框
+        assert 'class="p-t1"' in app                    # 结束时间输入框
+        assert "nearestIdx" in app                      # 时间输入按采样点落位
+        assert "p-zin" in app and "p-zreset" in app      # 缩放 / 还原
+        head = html.split("<body>")[1].split("<script>")[0]
+        assert "HBMC" not in head                       # 页头不糊 IP 名映射
 
 
 def _noc_store():
@@ -206,6 +270,32 @@ class TestExportRingReport:
         d = self._embedded_data(html)["noc_up_fail_count"]
         assert d["downsample"] is None
         assert len(d["times"]) == 2
+
+    def test_topo_view(self, tmp_path):
+        # 拓扑图模式：CS 方框四角 = 四个失败指标，箭头 = 链路占用率，首尾环绕
+        html = self._ring_html(_noc_store(), tmp_path)
+        assert "拓扑图" in html and "矩阵表" in html       # 模式切换
+        assert "topo-ring" in html and "tbox" in html      # 拓扑 DOM 结构
+        assert "buildTopo" in html and "updateTopo" in html
+        for metric in ("noc_UpInFail", "noc_UpOutFail",    # 四角指标接线
+                       "noc_DownInFail", "noc_DownOutFail",
+                       "noc_left_util", "noc_right_util"):
+            assert metric in html
+
+    def test_topo_arrow_values_and_node_names(self, tmp_path):
+        # 箭头标注利用率数值；方框显示硬件 IP 名（HBMC/MATA/SMMU...）
+        html = self._ring_html(_noc_store(), tmp_path)
+        assert "NODE_NAMES" in html                 # IP 名映射内嵌
+        assert "fmtShort" in html                   # 箭头/角标紧凑数值
+        assert 'class="tip"' in html                # 方框内 IP 名行
+        assert 'class="av"' in html                 # 箭头数值 span
+
+    def test_ring_filter_default_all(self, tmp_path):
+        # 每条 ring 一个复选框，默认全选（hidden 集合为空），拓扑/矩阵共用过滤
+        html = self._ring_html(_noc_store(), tmp_path)
+        assert "id='ring-filter'" in html
+        assert "hidden: new Set()" in html          # 默认不隐藏任何 ring
+        assert "shownRings" in html                 # 两个视图都走同一过滤
 
     def test_default_max_points_is_300k(self, tmp_path):
         # 不传 max_points 时默认上限 300000：600×501=300600 > 300000 -> k=2

@@ -1,11 +1,11 @@
 """profmw 演示：构建矩阵数据集 + NoC 接入 -> 保存 -> 读取 -> 窗口统计 -> HTML 报告。
 
 所有产物统一落进 run_demo/：中间件本体（meta.json + types/*.csv）与
-NoC raw 契约示例（raw/ 子目录，manifest + 指标矩阵 CSV）；波形报告与
-ring矩阵报告分开生成（ring 报告为纯 DOM，无需 plotly）。
+NoC raw 契约示例（raw/ 子目录，manifest + 指标矩阵 CSV）；波形框、
+ring 拓扑框与 AIC 时延框合并在同一个 HTML 观测报告中生成。
 
 用法:
-    python examples/demo.py          # 未装 plotly 时跳过波形报告，ring 报告照常生成
+    python examples/demo.py          # 未装 plotly 时跳过 HTML 报告
 """
 
 import shutil
@@ -21,11 +21,10 @@ import pandas as pd
 from profmw import ProfilingStore
 from profmw.dummy import make_noc_raw_dir
 from profmw.noc import add_noc_raw
-from profmw.report import export_report, export_ring_report
+from profmw.report import export_report
 
 OUT = Path("run_demo")
 REPORT = Path("run_demo_report.html")
-RING_REPORT = Path("run_demo_ring_report.html")
 
 TIMES = np.arange(0.0, 5000.0, 100.0)  # 50 个打点时间，列标
 
@@ -35,7 +34,8 @@ def build_matrix(rows: list[str], values: np.ndarray) -> pd.DataFrame:
 
 
 def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
-    """三组矩阵数据：DDR 带宽 / 96 通道 rx_req 平均深度 / 120 核 outstanding。"""
+    """四组数据：DDR 带宽 / 96 通道 rx_req 深度 / 120 核 outstanding /
+    8 个 AIC 的分路径平均时延。"""
     rng = np.random.default_rng(42)
     out = []
 
@@ -61,6 +61,19 @@ def build_types() -> list[tuple[str, pd.DataFrame, dict]]:
                 build_matrix([f"CORE{i:03d}" for i in range(120)], osts),
                 {"module": "dummy", "unit": "count", "stat": "窗口内均值",
                  "description": "各核窗口内平均读 outstanding 数"}))
+
+    # 4. 时延分段统计：每个 AIC 一张矩阵，行=时延路径，列=时间窗口，
+    #    值=该路径在窗口内的平均时延（ns）。各路径相加 = 端到端平均时延。
+    paths = ["AIC→Ring", "Ring→HBMC", "HBMC→Ring", "Ring→AIC"]
+    base = np.array([20.0, 50.0, 50.0, 20.0])      # 各路径基线（ns）
+    for k in range(8):
+        vals = base[:, None] + rng.normal(0.0, 2.5, size=(len(paths), len(TIMES)))
+        if k == 3:                                  # AIC03 的 Ring→HBMC 段抬升
+            vals[1, 20:30] += np.linspace(0.0, 60.0, 10)
+        out.append((f"lat_AIC{k:02d}", build_matrix(paths, vals),
+                    {"module": "AIC", "label": f"AIC{k}", "unit": "ns",
+                     "kind": "latency_path", "stat": "窗口内平均",
+                     "description": f"AIC{k} 各时延路径平均时延"}))
     return out
 
 
@@ -75,7 +88,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:   # scratch：run 结束后不留额外目录
         raw = make_noc_raw_dir(Path(tmp) / "noc_raw")   # 8 ring × 4 通道 × 25 CS，R03_Rsp CS12~14 注入环段拥塞
         add_noc_raw(store, raw)                  # 校验行标约定，levels 写入 run meta
-        for ptype in ("noc_up_fail_count", "noc_left_util"):
+        for ptype in ("noc_UpOutFail", "noc_left_util"):
             print(f"  {ptype}: 800 模块 × 200 时间点（已入库）")
 
         print("\n== 3. 按项目格式保存（meta.json + types/*.csv + raw/）==")
@@ -104,29 +117,27 @@ def main():
                                  agg="min", interp="linear"), 1))
     print("  --- NoC 层级查询（前缀 = 层级）---")
     print("  拥塞注入点 R03_Rsp_CS13 失败计数均值 =",
-          round(loaded.aggregate("noc_up_fail_count",
+          round(loaded.aggregate("noc_UpOutFail",
                                  modules=["R03_Rsp_CS13"], agg="mean"), 1))
     print("  R01_ 整条 ring 失败计数总和 =",
-          round(loaded.aggregate("noc_up_fail_count", module_prefix="R01_", agg="sum")))
+          round(loaded.aggregate("noc_UpOutFail", module_prefix="R01_", agg="sum")))
     print("  --- 分维聚合 magg/tagg ---")
     print("  R01 ring 平均每窗口总失败数 (magg=sum, tagg=mean) =",
-          round(loaded.aggregate("noc_up_fail_count", module_prefix="R01_",
+          round(loaded.aggregate("noc_UpOutFail", module_prefix="R01_",
                                  magg="sum", tagg="mean"), 1))
     print("  R03_Rsp 通道逐窗口失败总数曲线 (magg=sum) 前5点 =",
-          list(loaded.aggregate("noc_up_fail_count", module_prefix="R03_Rsp_",
+          list(loaded.aggregate("noc_UpOutFail", module_prefix="R03_Rsp_",
                                 magg="sum").iloc[:5].round(0)))
 
     print("\n== 6. 校验 ==")
     print(loaded.validate())
 
-    print("\n== 7. 生成 HTML 观测报告（波形报告 + ring矩阵报告，分开生成）==")
+    print("\n== 7. 生成 HTML 观测报告（波形框 + 拓扑框，单一文件）==")
     try:
         out = export_report(loaded, REPORT)
-        print(f"  波形报告: {out}（波形/热力图/统计表）")
+        print(f"  观测报告: {out}（波形/热力图/统计表 + 可新增 ring 拓扑框）")
     except ImportError:
-        print("  跳过波形报告：未安装 plotly。pip install plotly 后重跑即可生成")
-    ring = export_ring_report(loaded, RING_REPORT)
-    print(f"  ring矩阵报告: {ring}（纯 DOM，无需 plotly）")
+        print("  跳过观测报告：未安装 plotly。pip install plotly 后重跑即可生成")
 
 
 if __name__ == "__main__":
