@@ -67,10 +67,15 @@ th { background: #f5f7fa; position: sticky; top: 0; }
 .p-topo-inner { transform-origin: top left; }
 #topo { margin-bottom: 10px; }
 .topo-legend { color: #666; font-size: 12px; margin: 4px 0 10px; }
-.topo-ring { display: flex; align-items: center; margin-bottom: 6px; }
+/* 行宽取内容宽：CS 多时不压缩左侧 Ring 名，交由外层横向滚动 */
+.topo-ring { display: flex; align-items: center; margin-bottom: 6px;
+             width: max-content; }
 .topo-name { color: #4a90d9; font-weight: 600; font-size: 12px; margin-right: 6px;
-             min-width: 32px; }
-.topo-strip { display: flex; align-items: center; }
+             min-width: 32px; flex: 0 0 auto; white-space: nowrap; }
+/* 横向滚动时 Ring 名固定在左侧，不被 CS 方框盖住 */
+.p-topo-inner .topo-name { position: sticky; left: 0; z-index: 1;
+                           background: #fff; padding-right: 2px; }
+.topo-strip { display: flex; align-items: center; flex: 0 0 auto; }
 .tbox { border: 1px solid #c5ccd4; border-radius: 3px; padding: 2px 3px;
         background: #fff; text-align: center; }
 .tcs { font-size: 9px; line-height: 10px; color: #666; }

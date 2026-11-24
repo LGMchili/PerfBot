@@ -149,7 +149,7 @@ add_noc_raw(store, "noc_raw/")        # 校验行标符合层级约定，levels 
 raw 目录的 `ring_die.json`，缺省全部归 `die0`）、**开始/结束时间输入框**（按
 最近采样点落位，起止反填自动纠正，与拖拽条双向同步）、拖拽时间条（选点/选窗口，
 窗口时显示均值）、回放，以及拓扑图的**缩放（−/＋）与「还原」**（0.5×~3×，
-还原回 100%）。
+还原回 100%）。CS 较多时横向滚动，左侧 ring 名固定可见、不会被方框盖住。
 
 指标 = 4 个失败计数（`noc_UpInFail`/`noc_UpOutFail`/`noc_DownInFail`/`noc_DownOutFail`）
 + 2 个链路占用率（`noc_left_util`/`noc_right_util`）。缺省自动收录行标符合
