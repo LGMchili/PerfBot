@@ -212,9 +212,9 @@ class TestExportReport:
         assert "NODE_NAMES" in app and "HBMC" in app    # IP 名内嵌
         assert 'topoBtn.style.display = "none"' in app  # 无 NoC 数据时自动隐藏入口
         assert "p-die" in app and "RING_DIE" in app      # 按 die 下拉筛选
-        assert 'class="p-t0"' in app                    # 开始时间输入框
-        assert 'class="p-t1"' in app                    # 结束时间输入框
-        assert "nearestIdx" in app                      # 时间输入按采样点落位
+        assert 'class="p-window"' in app                # 固定时间窗信息（只读）
+        assert "固定时间窗" in app
+        assert "p-t0" not in app and "p-track" not in app  # 无交互选点/选窗
         assert "p-zin" in app and "p-zreset" in app      # 缩放 / 还原
         head = html.split("<body>")[1].split("<script>")[0]
         assert "HBMC" not in head                       # 页头不糊 IP 名映射

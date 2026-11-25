@@ -56,9 +56,7 @@ th { background: #f5f7fa; position: sticky; top: 0; }
 .ring-filter label { display: flex; align-items: center; gap: 2px; cursor: pointer; }
 .ring-filter input { margin: 0; }
 .ring-filter select { font-size: 12px; padding: 2px 4px; }
-.time-inputs { display: flex; align-items: center; gap: 6px; font-size: 12px;
-               color: #555; margin-bottom: 6px; }
-.time-inputs input { width: 90px; font-size: 12px; padding: 2px 4px; }
+.p-window { font-size: 12px; color: #555; margin-bottom: 6px; }
 .p-zoom { display: flex; align-items: center; gap: 4px; font-size: 12px; }
 .p-zoom button { border: 1px solid #ccc; background: #fff; border-radius: 4px;
                  padding: 1px 6px; cursor: pointer; font-size: 12px; }
@@ -635,9 +633,11 @@ function addTopoPanel() {
   if (!timeType) return;
   const parsed = parseNoc(DATA[timeType]);
   if (!parsed) return;
-  const state = { channel: parsed.channels[0], i1: 0, i2: 0,
-                  timer: null, die: "die0" };
+  const state = { channel: parsed.channels[0], die: "die0" };
   const dieOf = r => RING_DIE[r] || "die0";   // 未声明 die 的 ring 归 die0
+  // 固定时间窗：对整段数据的所有窗口取均值，不支持交互选点/选窗
+  const nT = DATA[timeType].times.length;
+  const VIEW = { i1: 0, i2: Math.max(0, nT - 1) };
   const wrap = document.createElement("div");
   wrap.className = "panel";
   wrap.innerHTML =
@@ -651,14 +651,7 @@ function addTopoPanel() {
     `<button class="p-close" title="移除面板">×</button></div>` +
     `<div class="ring-filter"><span>Die：</span>` +
     `<select class="p-die" title="die"></select></div>` +
-    `<div class="time-inputs">时间窗：` +
-    `<input class="p-t0" type="number" step="any" title="开始时间">` +
-    ` ～ <input class="p-t1" type="number" step="any" title="结束时间"></div>` +
-    `<div class="p-noc p-topo-bar" style="display:flex">` +
-    `<div class="n-track p-track" title="单击=选点；按住拖动或拖动手柄=选时间窗">` +
-    `<div class="n-fill"></div><div class="n-h n-h1"></div><div class="n-h n-h2"></div></div>` +
-    `<span class="n-time p-time"></span>` +
-    `<button class="n-play p-play">▶ 回放</button></div>` +
+    `<div class="p-window"></div>` +
     `<div class="p-topo"><div class="p-topo-inner"></div></div>` +
     `<div class="p-stats p-topo-stats"></div>`;
   document.getElementById("panels").appendChild(wrap);
@@ -667,7 +660,6 @@ function addTopoPanel() {
   const topoInner = $(".p-topo-inner");
   const dieSel = $(".p-die");
   const chSel = $(".p-ch");
-  const track = $(".p-track");
   let refs = null, builtCh = null;
 
   const entry = { el: wrap };
@@ -746,14 +738,14 @@ function addTopoPanel() {
     if (builtCh !== state.channel || refs === null) buildTopo();
     const ch = state.channel;
     const setCell = (el, type, name) => {
-      const v = metricVal(type, name, state);
+      const v = metricVal(type, name, VIEW);
       el.textContent = fmtShort(v);
       const sc = ringScale(type);
       el.style.background = sc ? cellColor(v, sc) : "";
       el.title = `${name} ${type}=${v == null || !isFinite(v) ? "-" : p(v)}`;
     };
     const setArrow = (el, type, name, dir) => {
-      const v = metricVal(type, name, state);
+      const v = metricVal(type, name, VIEW);
       el.querySelector(".av").textContent = fmtShort(v);
       const sc = ringScale(type);
       el.style.background = sc ? cellColor(v, sc) : "";
@@ -784,92 +776,20 @@ function addTopoPanel() {
       }
     });
     const times = DATA[timeType].times;
-    const nT = times.length;
-    const frac = i => nT > 1 ? i / (nT - 1) : 0;
-    $(".n-h1").style.left = `calc(${frac(state.i1) * 100}% - 6px)`;
-    $(".n-h2").style.left = `calc(${frac(state.i2) * 100}% - 6px)`;
-    const fill = $(".n-fill");
-    fill.style.left = `${frac(state.i1) * 100}%`;
-    fill.style.width = `${(frac(state.i2) - frac(state.i1)) * 100}%`;
-    const isWin = state.i2 > state.i1;
-    $(".p-time").textContent = isWin
-      ? `窗口 [${p(times[state.i1])}, ${p(times[state.i2])}]`
-      : `t=${p(times[state.i1])}`;
-    t0El.value = p(times[state.i1]);       // 输入框与拖拽条双向同步
-    t1El.value = p(times[state.i2]);
+    const t0 = times[0], t1 = times[times.length - 1];
+    $(".p-window").textContent =
+      `时间窗 [${p(t0)}, ${p(t1)}]：${times.length} 个窗口的均值`;
     $(".p-meta").textContent =
       `${parsed.rings.length} ring × ${(parsed.csByCh[ch] || []).length} CS`;
     $(".p-topo-stats").innerHTML =
-      `拓扑图 ｜ 通道 ${ch} ｜ ${isWin
-        ? `窗口 [${p(times[state.i1])}, ${p(times[state.i2])}] 均值（单击时间条回到选点）`
-        : `时刻 t=${p(times[state.i1])}（按住拖动时间条可选窗口）`}`;
+      `拓扑图 ｜ 通道 ${ch} ｜ 固定时间窗 [${p(t0)}, ${p(t1)}] 均值`;
   }
 
-  const h1El = $(".n-h1"), h2El = $(".n-h2"), play = $(".p-play");
-  const idxAt = ev => {                    // 时间条拖拽（与独立页面同一交互）
-    const r = track.getBoundingClientRect();
-    const f = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
-    return Math.round(f * (Math.max(1, DATA[timeType].times.length) - 1));
-  };
-  let drag = null;
-  const move = ev => {
-    const i = idxAt(ev);
-    if (drag === "h1") state.i1 = Math.min(i, state.i2);
-    else if (drag === "h2") state.i2 = Math.max(i, state.i1);
-    else if (drag === "track") state.i2 = Math.max(i, state.i1);
-    update();
-  };
-  track.addEventListener("pointerdown", ev => {
-    const i = idxAt(ev);
-    if (ev.target === h1El) drag = "h1";
-    else if (ev.target === h2El) drag = "h2";
-    else { drag = "track"; state.i1 = state.i2 = i; }
-    track.setPointerCapture(ev.pointerId);
-    move(ev);
-    ev.preventDefault();
-  });
-  track.addEventListener("pointermove", ev => { if (drag) move(ev); });
-  track.addEventListener("pointerup", () => { drag = null; });
-  play.onclick = () => {
-    const nT = DATA[timeType].times.length;
-    if (state.timer) {
-      clearInterval(state.timer); state.timer = null;
-      play.textContent = "▶ 回放";
-    } else {
-      state.timer = setInterval(() => {
-        state.i1 = state.i2 = (state.i2 + 1) % Math.max(1, nT);
-        update();
-      }, 150);
-      play.textContent = "⏸ 暂停";
-    }
-  };
   $(".p-close").onclick = () => {
-    if (state.timer) clearInterval(state.timer);
     wrap.remove();
     topoPanels.splice(topoPanels.indexOf(entry), 1);
     updateCloseButtons();
   };
-
-  // 时间输入框：填写后按最近采样点落位（起止顺序自动纠正）
-  const t0El = $(".p-t0"), t1El = $(".p-t1");
-  const nearestIdx = v => {
-    let best = 0, bd = Infinity;
-    DATA[timeType].times.forEach((x, i) => {
-      const d = Math.abs(x - v);
-      if (d < bd) { bd = d; best = i; }
-    });
-    return best;
-  };
-  const applyTimeInputs = () => {
-    const v0 = parseFloat(t0El.value), v1 = parseFloat(t1El.value);
-    if (!isFinite(v0) || !isFinite(v1)) return;
-    let a = nearestIdx(v0), b = nearestIdx(v1);
-    if (a > b) { const t = a; a = b; b = t; }
-    state.i1 = a; state.i2 = b;
-    update();
-  };
-  t0El.onchange = applyTimeInputs;
-  t1El.onchange = applyTimeInputs;
 
   // 缩放：只作用于拓扑图内容，「还原」回到 100%
   let zoom = 1;
